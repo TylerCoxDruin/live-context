@@ -111,6 +111,13 @@ const DEFAULT_SETTINGS = {
     arrivalMessageLingerMinutes: 15, // how long the "Welcome to..." message keeps showing after an event starts
     iconStyle: "glyph", // "glyph" (system SF Symbols) | "emoji"
     textAlignment: "center", // "left" | "center" | "right" — every row, every widget size
+    // Some Home Screen icon styles (iOS 26's "Clear," confirmed by direct
+    // testing) strip the color out of a pill's background fill entirely,
+    // regardless of whether a custom background image is set — turning
+    // every colored badge blank. Plain text has no fill to strip, so it
+    // survives; this trades the colorful badge look for readability under
+    // those styles. Off by default since most icon styles render pills fine.
+    plainTextPillsEnabled: false,
     // Tapping the widget opens whatever app matches what's currently shown
     // (Calendar for an event, Maps for a nearby place, etc.) — see
     // resolveWidgetURL. Some states have no confident deep link (battery,
@@ -2241,6 +2248,17 @@ function customMessageIcon(settings, message) {
 // each other).
 let currentTextAlignment = "center";
 
+// Same reasoning and lifecycle as currentTextAlignment above — set once
+// per render, read by addMixedRow below rather than threaded through
+// every individual state's rendering case. Exists because some Home
+// Screen icon styles (iOS 26's "Clear," confirmed by direct testing) strip
+// the color out of a pill's background fill entirely, regardless of
+// whether a custom background image is even set — turning every colored
+// badge into an unreadable blank shape. Plain text has no background fill
+// to strip, so it survives those styles; this flag switches every pill in
+// the widget over to it.
+let plainTextPillsEnabled = false;
+
 // Wraps `buildContent(row)` in an outer stack with spacers placed
 // according to currentTextAlignment: both sides (centered, the original
 // and still-default behavior), just the trailing side (left — content
@@ -2449,6 +2467,18 @@ function addDateBadge(container, month, day, style, url) {
 // `url`, when given, makes the whole row one tap target — for plain
 // single-string rows (no per-segment pill urls to fall back on), like the
 // small wind-down layout's title/message lines.
+// The plainTextPillsEnabled fallback for any pill/framedPill/dateBadge
+// segment — same text/shadow/tap-target handling as the plain-string
+// branch just below, factored out since three segment types need it.
+function addPlainTextSegment(row, text, style, url) {
+  const label = row.addText(text);
+  label.font = style.font;
+  label.textColor = style.color;
+  label.lineLimit = 1;
+  if (style.shadow) applyTextShadow(label, style.shadow);
+  if (url) label.url = url;
+}
+
 function addMixedRow(widget, segments, style, url) {
   addAlignedRow(widget, (row) => {
     segments.forEach((segment, index) => {
@@ -2460,9 +2490,19 @@ function addMixedRow(widget, segments, style, url) {
         label.lineLimit = 1;
         if (style.shadow) applyTextShadow(label, style.shadow);
       } else if (segment.dateBadge) {
-        addDateBadge(row, segment.dateBadge.month, segment.dateBadge.day, style, segment.url);
+        if (plainTextPillsEnabled) {
+          addPlainTextSegment(row, `${segment.dateBadge.month} ${segment.dateBadge.day}`, style, segment.url);
+        } else {
+          addDateBadge(row, segment.dateBadge.month, segment.dateBadge.day, style, segment.url);
+        }
       } else if (segment.framedPill) {
-        addFramedPill(row, segment.framedPill, segment.color, style, segment.icon, segment.url);
+        if (plainTextPillsEnabled) {
+          addPlainTextSegment(row, segment.framedPill, style, segment.url);
+        } else {
+          addFramedPill(row, segment.framedPill, segment.color, style, segment.icon, segment.url);
+        }
+      } else if (plainTextPillsEnabled) {
+        addPlainTextSegment(row, segment.pill, style, segment.url);
       } else {
         addPill(row, segment.pill, segment.color, style, segment.icon, segment.url);
       }
@@ -2722,6 +2762,7 @@ async function createWidget(settings, family = "small") {
   // error fallback, if something throws immediately — so every row this
   // render produces (see addAlignedRow) picks it up consistently.
   currentTextAlignment = settings.behavior.textAlignment ?? "center";
+  plainTextPillsEnabled = Boolean(settings.behavior.plainTextPillsEnabled);
 
   try {
     // Fetched once here (cached, so cheap) and threaded through both
@@ -3671,16 +3712,23 @@ const SETTINGS_SECTIONS = [
       },
       {
         label: "🩶 Pill Text Color",
-        description: "Pills (the date badge, temperature, etc.) normally use white text on their own colored fill, separately from the setting above. This won't help if your Home Screen icon style is set to \"Clear\" (iOS 26+) — in that mode iOS forces all widget text to white no matter what any app sets, so switching this to Dark has no visible effect. If that's your situation, turn off Background Image above instead and let iOS's own Clear style handle the transparency. Only matters while a background image is set.",
+        description: "Pills (the date badge, temperature, etc.) normally use white text on their own colored fill, separately from the setting above. Confirmed by testing: this alone does not fix iOS 26's \"Clear\" Home Screen icon style, which strips pill colors regardless of this setting — see Plain Text Pills below for what actually works there. Only matters while a background image is set.",
         get: (s) => (s.behavior.backgroundImagePillTextColor === "dark" ? "Dark" : "White"),
         apply: (s, value) => { s.behavior.backgroundImagePillTextColor = value === "Dark" ? "dark" : "white"; },
         choices: ["White", "Dark"],
       },
       {
         label: "🖤 Text Shadow",
-        description: "Adds a soft shadow behind every piece of text and pill while a background image is set, so it stays readable regardless of what's behind it. On is recommended, but turn it off if you'd rather have flat text without the halo. Won't help against iOS's \"Clear\" Home Screen icon style specifically (see Pill Text Color above) — that's a system-level override this can't reach. Only matters while a background image is set.",
+        description: "Adds a soft shadow behind every piece of text and pill while a background image is set, so it stays readable regardless of what's behind it. On is recommended, but turn it off if you'd rather have flat text without the halo. Doesn't fix iOS 26's \"Clear\" Home Screen icon style either (see Plain Text Pills below). Only matters while a background image is set.",
         get: (s) => (s.behavior.backgroundImageTextShadowEnabled ? "On" : "Off"),
         apply: (s, value) => { s.behavior.backgroundImageTextShadowEnabled = value === "On"; },
+        choices: ["On", "Off"],
+      },
+      {
+        label: "🔤 Plain Text Pills",
+        description: "Some Home Screen icon styles (confirmed with iOS 26's \"Clear\" style) strip the color out of pills entirely, turning dates/temperatures/etc. into blank shapes — this happens even without a background image set. Turn this on to show that information as plain text instead of colored badges. You lose the colorful badge look, but it survives icon styles that break pills outright.",
+        get: (s) => (s.behavior.plainTextPillsEnabled ? "On" : "Off"),
+        apply: (s, value) => { s.behavior.plainTextPillsEnabled = value === "On"; },
         choices: ["On", "Off"],
       },
       {
