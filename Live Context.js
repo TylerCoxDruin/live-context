@@ -389,6 +389,19 @@ function setCacheEntry(key, data) {
   writeJSONFile(CACHE_FILENAME, cache);
 }
 
+// Removes a single entry outright, rather than just letting it age out.
+// Needed when a setting changes the *meaning* of already-cached data (e.g.
+// switching Temperature Units) — OpenWeatherMap and Open-Meteo both convert
+// server-side based on a units query param, so the cached response is only
+// valid for whichever units it was originally fetched under. Without this,
+// flipping the setting would keep showing stale-unit numbers for up to a
+// full cache window instead of refreshing immediately.
+function clearCacheEntry(key) {
+  const cache = loadCacheFile();
+  delete cache[key];
+  writeJSONFile(CACHE_FILENAME, cache);
+}
+
 // Returns `{ data, ageMinutes, stale }` for `key`, or null if nothing is cached.
 // `stale` is true once the entry is older than maxAgeMinutes.
 function getCacheEntry(key, maxAgeMinutes) {
@@ -3707,7 +3720,17 @@ const SETTINGS_SECTIONS = [
         },
         apply: (s, value) => {
           const internal = { Fahrenheit: "imperial", Celsius: "metric", Kelvin: "standard" };
-          s.weather.units = internal[value] ?? "imperial";
+          const newUnits = internal[value] ?? "imperial";
+          // Both OpenWeatherMap and Open-Meteo convert server-side, so the
+          // cached responses are only valid under whichever units they were
+          // fetched with — without clearing them, switching this setting
+          // would keep showing the old units until the cache next expires
+          // on its own (up to Cache Limit minutes later).
+          if (newUnits !== s.weather.units) {
+            clearCacheEntry(WEATHER_CACHE_KEY);
+            clearCacheEntry(FORECAST_CACHE_KEY);
+          }
+          s.weather.units = newUnits;
         },
         choices: ["Fahrenheit", "Celsius", "Kelvin"],
       },
