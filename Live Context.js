@@ -3623,7 +3623,7 @@ const SETTINGS_SECTIONS = [
       },
       {
         label: "🎨 Background Image",
-        description: "Use a transparent/blurred background image instead of the default system background. Generate one first with the separate \"Transparent & Blurred Widgets\" script (export to Photos or Files), then pick it here.",
+        description: "Use a transparent/blurred background image instead of the default system background. Generate one first with the separate \"Transparent & Blurred Widgets\" script (export to Photos or Files), then pick it here. If your Home Screen icon style is already set to \"Clear\" (iOS 26+), skip this entirely — iOS already makes the widget see-through on its own, and stacking this on top of that tends to wash out the pills instead of helping.",
         get: (s) => (s.behavior.backgroundImageEnabled ? "Set" : "Not set"),
         apply: (s, value) => { s.behavior.backgroundImageEnabled = value; },
         isBackgroundImagePicker: true,
@@ -3671,14 +3671,14 @@ const SETTINGS_SECTIONS = [
       },
       {
         label: "🩶 Pill Text Color",
-        description: "Pills (the date badge, temperature, etc.) normally use white text on their own colored fill, separately from the setting above. Switch to Dark only if your Home Screen's own transparency/\"Liquid Glass\" icon style overrides the pills to solid white — Scriptable has no way to detect that automatically, so pick by eye. Only matters while a background image is set.",
+        description: "Pills (the date badge, temperature, etc.) normally use white text on their own colored fill, separately from the setting above. This won't help if your Home Screen icon style is set to \"Clear\" (iOS 26+) — in that mode iOS forces all widget text to white no matter what any app sets, so switching this to Dark has no visible effect. If that's your situation, turn off Background Image above instead and let iOS's own Clear style handle the transparency. Only matters while a background image is set.",
         get: (s) => (s.behavior.backgroundImagePillTextColor === "dark" ? "Dark" : "White"),
         apply: (s, value) => { s.behavior.backgroundImagePillTextColor = value === "Dark" ? "dark" : "white"; },
         choices: ["White", "Dark"],
       },
       {
         label: "🖤 Text Shadow",
-        description: "Adds a soft shadow behind every piece of text and pill while a background image is set, so it stays readable regardless of what's behind it. On is recommended, but turn it off if you'd rather have flat text without the halo. Only matters while a background image is set.",
+        description: "Adds a soft shadow behind every piece of text and pill while a background image is set, so it stays readable regardless of what's behind it. On is recommended, but turn it off if you'd rather have flat text without the halo. Won't help against iOS's \"Clear\" Home Screen icon style specifically (see Pill Text Color above) — that's a system-level override this can't reach. Only matters while a background image is set.",
         get: (s) => (s.behavior.backgroundImageTextShadowEnabled ? "On" : "Off"),
         apply: (s, value) => { s.behavior.backgroundImageTextShadowEnabled = value === "On"; },
         choices: ["On", "Off"],
