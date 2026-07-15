@@ -10,7 +10,6 @@ read [`README.md`](README.md) instead.
 |---|---|
 | [`Live Context.js`](Live%20Context.js) | The widget itself. This is the only file you actually add to Scriptable as a Home Screen widget. |
 | [`Live Context Bridge.js`](Live%20Context%20Bridge.js) | Receives data from Shortcuts automations. Don't run this one directly, see below. |
-| [`Live Context Showcase.js`](Live%20Context%20Showcase.js) | Lets you preview every state (severe weather, low battery, and so on) with sample data, mostly useful for taking screenshots. |
 | [`Transparent & Blurred Widgets.js`](Transparent%20%26%20Blurred%20Widgets.js) | A little wizard that builds a background image matching your wallpaper, for the transparent/glass widget look. |
 | [`Permission Check.js`](Permission%20Check.js) | Walks through every permission prompt (Location, Calendar, etc.) up front instead of letting them surprise you later. The same check is also built into the widget's own main menu. |
 
