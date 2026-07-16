@@ -124,9 +124,24 @@ OpenWeatherMap fetch.
 
 ### Sleep
 
-- Get the data with **Find Health Samples** (Sleep Analysis, last night),
-  summed into decimal hours
-- Dictionary: `{"type": "sleep", "hours": 7.2}`
+Fair warning: getting sleep data out of the Health app is the fiddliest
+of these, because Health stores a night of sleep as a pile of separate
+samples that the Shortcut has to add up itself. The bridge accepts hours,
+minutes, or seconds so you can send whichever unit your Shortcut ends up
+with and skip the conversion math.
+
+- Dictionary: `{"type": "sleep", "hours": 7.2}`, or
+  `{"type": "sleep", "minutes": 432}`, or `{"type": "sleep", "seconds": 25920}`
+- One way to build it:
+  1. **Find Health Samples** where Type is **Sleep Analysis**, Start Date
+     is in the last 24 hours, Value is **Asleep** (not In Bed)
+  2. **Get Details of Health Sample** > Duration on each result, then
+     **Calculate Statistics** > Sum
+  3. Put that number in the dictionary under whichever unit it came out
+     as, and pass it to **Run Script in Scriptable** > `Live Context Bridge`
+- If you already have a sleep-analysis Shortcut you like, you can also
+  just take its total-time output and feed that into the dictionary. The
+  bridge doesn't care where the number came from.
 
 ### Activity Rings
 
@@ -185,8 +200,11 @@ Run it directly, not from Live Context:
 
 Then back in Live Context: **Edit Settings > Appearance > Background
 Image** (and **Dark Background Image**, if you made one), and pick the
-image you just exported. If you made both, **Dark Hours Start/End** (or
-**Use Actual Sunset/Sunrise**) controls when each one shows.
+image you just exported. The field should read "Set" afterward, which is
+also the quickest way to confirm it saved. If you made both, **Dark Hours
+Start/End** (or **Use Actual Sunset/Sunrise**) controls when each one
+shows. The background applies everywhere, including the nightly Wind Down
+screen (which prefers the dark variant if you made one).
 
 You can also launch this tool straight from Live Context's own main menu,
 under **Create Transparent Background**, instead of hunting it down

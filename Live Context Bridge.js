@@ -173,15 +173,26 @@ function handleWeather(input) {
   console.log(`Recorded weather: ${tempF}°F, ${input.condition ?? "Clouds"}.`);
 }
 
-// { type: "sleep", hours: 7.2 }
+// { type: "sleep", hours: 7.2 } — or { minutes: 432 } or { seconds: 25920 }
 // Pair with a Shortcut that sums last night's "Asleep" Health samples (via
-// "Find Health Samples") into a single decimal-hours number — something
-// Scriptable has no API for on its own.
+// "Find Health Samples") — something Scriptable has no API for on its own.
+// All three units are accepted because Shortcuts' own duration math hands
+// you whichever unit the sample statistics happen to be in, and converting
+// between them inside Shortcuts is exactly the kind of fiddly extra step
+// this bridge shouldn't require. Send whichever one you already have;
+// hours wins if more than one is present.
 function handleSleep(input) {
-  const hours = Number(input.hours);
+  let hours = null;
+  if (input.hours != null) hours = Number(input.hours);
+  else if (input.minutes != null) hours = Number(input.minutes) / 60;
+  else if (input.seconds != null) hours = Number(input.seconds) / 3600;
+
   if (!Number.isFinite(hours) || hours < 0) {
-    throw new Error(`"hours" must be a non-negative number — got "${input.hours}"`);
+    throw new Error(`One of "hours", "minutes", or "seconds" must be a non-negative number — got hours="${input.hours}", minutes="${input.minutes}", seconds="${input.seconds}"`);
   }
+  // Stored to two decimals — sub-fraction-of-a-minute precision is noise
+  // for a "how did I sleep" glance.
+  hours = Math.round(hours * 100) / 100;
   writeCacheEntry("shortcutSleep", { hours });
   console.log(`Recorded ${hours} hours of sleep.`);
 }

@@ -2733,15 +2733,26 @@ async function fetchTomorrowFirstEvent(settings) {
 // outside the large-only weather footer.
 async function renderWindDownWidget(settings, family, weather) {
   const widget = new ListWidget();
-  // A soft night-sky gradient instead of flat black — same overall
-  // darkness (a bright card at 11pm still defeats the point of this mode),
-  // just with a bit of depth instead of a flat rectangle.
-  const gradient = new LinearGradient();
-  gradient.colors = [new Color("#161d34"), Color.black()];
-  gradient.locations = [0, 1];
-  gradient.startPoint = new Point(0, 0);
-  gradient.endPoint = new Point(0, 1);
-  widget.backgroundGradient = gradient;
+  // A custom background image wins here too — anyone who set one up
+  // expects the whole widget transparent, wind-down included, and the
+  // dark-variant slot (schedule-aware via selectedBackgroundVariant) means
+  // nighttime gets the matching dark image rather than something bright.
+  // Without one, the original soft night-sky gradient: same overall
+  // darkness as flat black (a bright card at 11pm defeats the point of
+  // this mode), just with a bit of depth.
+  const variant = selectedBackgroundVariant(settings, weather);
+  const backgroundImage = variant ? loadBackgroundImage(variant) : null;
+  if (backgroundImage) {
+    widget.backgroundImage = backgroundImage;
+  } else {
+    const gradient = new LinearGradient();
+    gradient.colors = [new Color("#161d34"), Color.black()];
+    gradient.locations = [0, 1];
+    gradient.startPoint = new Point(0, 0);
+    gradient.endPoint = new Point(0, 1);
+    widget.backgroundGradient = gradient;
+  }
+  const windDownShadow = resolvedTextShadow(settings, Boolean(backgroundImage));
   widget.setPadding(14, 14, 14, 14);
 
   const ACCENT = new Color("#a5b4fc"); // soft lavender — the one accent color here, calm rather than bright/alarming
@@ -2790,12 +2801,12 @@ async function renderWindDownWidget(settings, family, weather) {
   // and trailing spacers together center the content vertically.
   if (family === "small") {
     widget.addSpacer();
-    addMixedRow(widget, ["Wind Down"], withColor(scaledStyle(primaryStyle(family), 0.75), ACCENT), primaryUrl);
+    addMixedRow(widget, ["Wind Down"], withColor(scaledStyle(primaryStyle(family), 0.75), ACCENT, windDownShadow), primaryUrl);
     widget.addSpacer(4);
     const shortSecondLine = isChargeWarning
       ? `Charge — ${batteryPercent}%`
       : weatherHeadsUp ?? (tomorrowEvent ? tomorrowEvent.title : settings.behavior.windDownMessage);
-    addMixedRow(widget, [shortSecondLine], withColor(secondaryStyle(family), MUTED), secondLineUrl);
+    addMixedRow(widget, [shortSecondLine], withColor(secondaryStyle(family), MUTED, windDownShadow), secondLineUrl);
     widget.addSpacer();
     widget.refreshAfterDate = computeWindDownRefreshDate();
     return widget;
@@ -2815,14 +2826,14 @@ async function renderWindDownWidget(settings, family, weather) {
     : icon(settings, "windDownMoon");
 
   widget.addSpacer();
-  addIconTextRow(widget, windDownIcon, "Wind Down", withColor(primaryStyle(family), ACCENT), primaryUrl);
+  addIconTextRow(widget, windDownIcon, "Wind Down", withColor(primaryStyle(family), ACCENT, windDownShadow), primaryUrl);
   widget.addSpacer(4);
 
   if (isChargeWarning) {
     // A real colored pill for the number — matching the "Battery Low"
     // state's own visual language — instead of plain text, since this is
     // the one wind-down case that's an actual warning worth the emphasis.
-    addMixedRow(widget, [{ pill: `${batteryPercent}%`, color: PILL_COLORS.battery }, "— charge tonight"], withColor(secondaryStyle(family), MUTED));
+    addMixedRow(widget, [{ pill: `${batteryPercent}%`, color: PILL_COLORS.battery }, "— charge tonight"], withColor(secondaryStyle(family), MUTED, windDownShadow));
   } else {
     // Match the icon to whichever content actually ended up on this line —
     // the bolt/plug glyph only makes sense for the charge-related fallback
@@ -2837,12 +2848,12 @@ async function renderWindDownWidget(settings, family, weather) {
       : tomorrowText
       ? icon(settings, "tomorrow")
       : icon(settings, "reminder");
-    addIconTextRow(widget, secondLineIcon, secondLine, withColor(secondaryStyle(family), MUTED), secondLineUrl);
+    addIconTextRow(widget, secondLineIcon, secondLine, withColor(secondaryStyle(family), MUTED, windDownShadow), secondLineUrl);
   }
 
   if (hasWarning && tomorrowText) {
     widget.addSpacer(4);
-    addIconTextRow(widget, icon(settings, "tomorrow"), tomorrowText, withColor(tertiaryStyle(family), MUTED), tomorrowUrl);
+    addIconTextRow(widget, icon(settings, "tomorrow"), tomorrowText, withColor(tertiaryStyle(family), MUTED, windDownShadow), tomorrowUrl);
   }
   widget.addSpacer();
 
@@ -3731,6 +3742,13 @@ async function runDiagnostics() {
   }
 
   const weather = await fetchWeather(settings);
+  if (weather) {
+    lines.push(`🌤️ Weather OK: ${formatTemperature(weather, settings)}, ${describeWeather(weather)}.`);
+  } else if (!hasApiKey(settings)) {
+    lines.push("❌ Weather: no OpenWeatherMap API key set (Settings → Weather → API Key). Nothing weather-related can show until one is added — the free tier at openweathermap.org works.");
+  } else {
+    lines.push("❌ Weather: the OpenWeatherMap request failed and nothing is cached yet. Double-check the API key (new keys take a few minutes to activate) and that Scriptable has network access.");
+  }
   if (settings.weather.severeAlertsEnabled) {
     const alerts = await fetchSevereWeatherAlerts(settings, weather);
     lines.push(alerts == null
