@@ -2869,6 +2869,25 @@ async function createWidget(settings, family = "small") {
     // wanted their own copy, which just meant a second cache lookup before.
     const weather = await fetchWeather(settings);
 
+    // Lock Screen (accessory) widgets get their own minimal, text-only
+    // rendering — iOS forces them monochrome and tiny, so none of the
+    // pill/color/background system below applies. Same model, same
+    // priority order; only the presentation differs.
+    if (String(family).startsWith("accessory")) {
+      if (isWindDownTime(settings, weather)) {
+        const widget = renderAccessoryWidget(
+          { title: "Wind Down", subtitle: settings.behavior.windDownMessage },
+          family
+        );
+        widget.refreshAfterDate = computeWindDownRefreshDate();
+        return widget;
+      }
+      const model = await buildWidgetModel(settings, weather);
+      const widget = renderAccessoryWidget(accessoryLines(model, settings), family);
+      widget.refreshAfterDate = computeRefreshDate(model, settings);
+      return widget;
+    }
+
     if (isWindDownTime(settings, weather)) {
       return await renderWindDownWidget(settings, family, weather);
     }
@@ -2879,6 +2898,129 @@ async function createWidget(settings, family = "small") {
     console.error(`Widget failed to build: ${e}`);
     return renderErrorWidget(settings, family);
   }
+}
+
+// MARK: - Lock Screen (Accessory) Widgets
+
+// Boils the full model down to two short plain-text lines. Reuses the
+// same formatters as the Home Screen rendering so numbers/times read
+// identically in both places — only the layout is simpler.
+function accessoryLines(model, settings) {
+  const weather = model.weather;
+  const temp = weather ? formatTemperature(weather, settings) : null;
+
+  switch (model.priority) {
+    case "severe-weather":
+      return { title: model.alert.event ?? "Severe Weather", subtitle: formatAlertUntil(model.alert, settings) };
+    case "high-value-event":
+    case "event":
+      return { title: model.event.title, subtitle: `In ${formatCountdownValue(model.event.startDate)}` };
+    case "event-arrival":
+      return { title: `Welcome to ${model.event.title}!`, subtitle: model.event.location };
+    case "rain-incoming":
+      return { title: `Rain in ${model.minutesUntilRain}m`, subtitle: temp };
+    case "custom-message":
+      return { title: model.message.title, subtitle: model.message.subtitle };
+    case "commute":
+      return { title: `Commute ~${model.commute.minutes} min`, subtitle: formatDistance(model.commute.distanceMeters, settings) };
+    case "geofence":
+      return { title: `Near ${model.geofence.label}`, subtitle: `${formatDistance(model.geofence.distanceMeters, settings)} away` };
+    case "battery":
+      return { title: `Battery ${Math.round(model.battery.level * 100)}%`, subtitle: "Charge soon" };
+    case "weather":
+      return { title: describeWeather(model.weather), subtitle: temp };
+    case "air-quality":
+      return { title: `AQI ${model.aqi}`, subtitle: "Poor air quality" };
+    case "uv":
+      return { title: `UV ${model.uvIndex}`, subtitle: "Wear sunscreen" };
+    case "holiday":
+      return { title: `Happy ${model.holiday}!`, subtitle: temp };
+    case "birthdays":
+      return {
+        title: model.contactBirthdays.length === 1 ? "Birthday Today" : `${model.contactBirthdays.length} Birthdays Today`,
+        subtitle: model.contactBirthdays.join(", "),
+      };
+    case "reminders":
+      return {
+        title: model.dueReminders.length === 1 ? "1 Reminder Due" : `${model.dueReminders.length} Reminders Due`,
+        subtitle: model.dueReminders[0].title,
+      };
+    case "steps":
+      return { title: `${model.steps.toLocaleString()} steps`, subtitle: "Today" };
+    case "sleep": {
+      const hours = Math.floor(model.hours);
+      const minutes = Math.round((model.hours - hours) * 60);
+      return { title: minutes > 0 ? `${hours}h ${minutes}m sleep` : `${hours}h sleep`, subtitle: "Last night" };
+    }
+    case "activity": {
+      const parts = [];
+      if (model.activity.exerciseMinutes != null) parts.push(`${Math.round(model.activity.exerciseMinutes)}m exercise`);
+      if (model.activity.activeCalories != null) parts.push(`${Math.round(model.activity.activeCalories)} cal`);
+      if (model.activity.standHours != null) parts.push(`${Math.round(model.activity.standHours)}h stand`);
+      return { title: "Activity", subtitle: parts.join(" · ") };
+    }
+    case "stocks":
+      return { title: "Markets Closed", subtitle: model.stockQuotes.map((quote) => formatStockQuote(quote)).join("  ") };
+    case "temp-swing":
+      return {
+        title: model.tempSwing.delta < 0 ? "Colder Tomorrow" : "Warmer Tomorrow",
+        subtitle: `High ${Math.round(model.tempSwing.tomorrowHigh)}° (today ${Math.round(model.tempSwing.todayHigh)}°)`,
+      };
+    case "now-playing":
+      return { title: model.nowPlaying.title, subtitle: model.nowPlaying.artist };
+    default:
+      return {
+        title: `${getGreeting()}, ${settings.user.name}`,
+        subtitle: [settings.behavior.showDate ? formatShortOrdinalDate(settings) : null, temp].filter(Boolean).join(" · "),
+      };
+  }
+}
+
+// Text only, no explicit colors — the Lock Screen applies its own vibrant/
+// monochrome rendering, and fighting it with fixed colors is exactly the
+// mistake the pill system makes under forced styles. lineLimit +
+// minimumScaleFactor instead of truncation where space allows.
+function renderAccessoryWidget(lines, family) {
+  const widget = new ListWidget();
+  widget.addAccessoryWidgetBackground = true;
+  widget.setPadding(0, 0, 0, 0);
+
+  if (family === "accessoryInline") {
+    // Inline is a single line of text next to the Lock Screen date — iOS
+    // ignores most styling here, so it's just the two parts joined.
+    widget.addText(lines.subtitle ? `${lines.title} · ${lines.subtitle}` : lines.title);
+    return widget;
+  }
+
+  if (family === "accessoryCircular") {
+    // A tiny circle fits one short value; the title (scaled down as far
+    // as halved) is the most it can usefully show.
+    widget.addSpacer();
+    const label = widget.addText(lines.title);
+    label.font = Font.semiboldSystemFont(13);
+    label.lineLimit = 2;
+    label.minimumScaleFactor = 0.5;
+    label.centerAlignText();
+    widget.addSpacer();
+    return widget;
+  }
+
+  // accessoryRectangular (and anything unrecognized): the fullest accessory
+  // layout — up to two lines, title emphasized.
+  widget.addSpacer();
+  const title = widget.addText(lines.title);
+  title.font = Font.semiboldSystemFont(15);
+  title.lineLimit = 1;
+  title.minimumScaleFactor = 0.8;
+  if (lines.subtitle) {
+    widget.addSpacer(2);
+    const subtitle = widget.addText(lines.subtitle);
+    subtitle.font = Font.systemFont(13);
+    subtitle.lineLimit = 1;
+    subtitle.minimumScaleFactor = 0.8;
+  }
+  widget.addSpacer();
+  return widget;
 }
 
 function renderErrorWidget(settings, family = "small") {
@@ -3719,9 +3861,10 @@ async function presentPreviewSizeMenu() {
   alert.addAction("Small");
   alert.addAction("Medium");
   alert.addAction("Large");
+  alert.addAction("Lock Screen");
   alert.addCancelAction("Cancel");
   const choice = await alert.presentAlert();
-  return ["small", "medium", "large"][choice] ?? null;
+  return ["small", "medium", "large", "accessoryRectangular"][choice] ?? null;
 }
 
 // Each field carries everything the settings list needs: a label, an emoji
@@ -5019,6 +5162,7 @@ async function run() {
   const widget = await createWidget(getCurrentSettings(), family);
   if (family === "medium") await widget.presentMedium();
   else if (family === "large") await widget.presentLarge();
+  else if (family === "accessoryRectangular") await widget.presentAccessoryRectangular();
   else await widget.presentSmall();
 
   Script.complete();
