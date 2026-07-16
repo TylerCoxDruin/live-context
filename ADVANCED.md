@@ -24,9 +24,10 @@ list as a map of what's grouped where, not a replacement for actually
 reading those.
 
 - **Appearance**: icon style (SF Symbols vs. emoji), text alignment,
-  background image (light and dark variants), text color/shadow for
-  background images, plain text pills (for Home Screen icon styles that
-  break colored badges, more on that below), tap-to-open.
+  background image (light and dark variants), text color/shadow and
+  optional dimming for background images, plain text pills (for Home
+  Screen icon styles that break colored badges, more on that below),
+  tap-to-open.
 - **Priorities**: reorder which information wins when several things
   apply at once. The widget shows exactly one state at a time, whichever
   is highest on this list. Severe weather always stays on top and can't
@@ -41,7 +42,7 @@ reading those.
 - **Calendar & Events**: which calendars to search, the work schedule
   calendar (more on that below), event lookahead, high-value event
   keywords, arrival detection, travel time estimate, holidays, contacts'
-  birthdays, reminders.
+  birthdays, reminders, and the "Coming up" agenda on the large widget.
 - **Battery**: low battery threshold, alerts, and a Shortcut to run when
   you tap the widget during a low-battery alert.
 - **Wind Down**: the nightly quiet mode. Hours (fixed or sunset-based),
@@ -217,6 +218,12 @@ also the quickest way to confirm it saved. If you made both, **Dark Hours
 Start/End** (or **Use Actual Sunset/Sunrise**) controls when each one
 shows. The background applies everywhere, including the nightly Wind Down
 screen (which prefers the dark variant if you made one).
+
+The image renders exactly as exported, no darkening, so the widget should
+match the wallpaper around it seamlessly. If text is hard to read on a
+very bright wallpaper, **Appearance > Background Dimming** adds a slight
+darkening on purpose; just know that any dimming makes the widget region
+visibly darker than the rest of your wallpaper.
 
 You can also launch this tool straight from Live Context's own main menu,
 under **Create Transparent Background**, instead of hunting it down

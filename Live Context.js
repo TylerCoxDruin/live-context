@@ -37,6 +37,7 @@ const DEFAULT_SETTINGS = {
   },
   behavior: {
     eventLookaheadHours: 6, // how far ahead to look for upcoming calendar events
+    largeAgendaEnabled: true, // the "Coming up" event list under the main content on the large widget
     eventAlertEnabled: true, // whether an upcoming event can take over the widget
     lowBatteryThreshold: 0.2, // battery fraction (0-1) considered "low"
     batteryAlertEnabled: true, // whether low battery can take over the widget
@@ -123,6 +124,13 @@ const DEFAULT_SETTINGS = {
     // survives; this trades the colorful badge look for readability under
     // those styles. Off by default since most icon styles render pills fine.
     plainTextPillsEnabled: false,
+    // Optional darkening baked into the background image for legibility on
+    // very bright wallpapers — "off" | "subtle" | "standard". Off by
+    // default: any dimming makes the widget region visibly darker than the
+    // wallpaper around it, breaking the seamless-transparency effect (the
+    // per-glyph text shadows handle legibility on their own for most
+    // wallpapers).
+    backgroundDimming: "off",
     // Tapping the widget opens whatever app matches what's currently shown
     // (Calendar for an event, Maps for a nearby place, etc.) — see
     // resolveWidgetURL. Some states have no confident deep link (battery,
@@ -131,10 +139,9 @@ const DEFAULT_SETTINGS = {
     // Set via the settings menu's image picker, not typed — true once an
     // image has been imported (see MARK: - Background Image).
     backgroundImageEnabled: false,
-    // Every background image gets a darkening scrim (see
-    // applyLegibilityScrim), so white text reads fine almost regardless of
-    // the photo — "dark" is only there for a background so light the scrim
-    // still isn't enough. Default is "white" for exactly that reason.
+    // Text color over a background image. White + the per-glyph text
+    // shadows read fine on most wallpapers; "dark" is for genuinely bright
+    // ones (see also backgroundDimming below for a stronger measure).
     backgroundImageTextColor: "white", // "white" | "dark"
     // Pills normally supply their own vivid fill (see PILL_COLORS), so
     // white pill text is right almost always — separate from
@@ -246,6 +253,9 @@ function sanitizeSettings(s) {
   // so it doesn't linger in the stored settings forever.
   if (s.behavior.priorityOrder != null && !Array.isArray(s.behavior.priorityOrder)) {
     s.behavior.priorityOrder = null;
+  }
+  if (!["off", "subtle", "standard"].includes(s.behavior.backgroundDimming)) {
+    s.behavior.backgroundDimming = d.behavior.backgroundDimming;
   }
   // The settings menu itself can only ever produce a valid value now (see
   // its own get/apply mapping), but a per-widget parameter override is
@@ -482,63 +492,77 @@ function getBackgroundImagePath(variant) {
   return fm.joinPath(fm.documentsDirectory(), BACKGROUND_IMAGE_FILENAMES[variant]);
 }
 
-// Darkens the loaded image with a translucent black overlay so text stays
-// legible almost regardless of how bright the original photo is. This is
-// the coarse, whole-image half of legibility protection; the actual text
-// (see resolvedTextShadow/applyTextShadow) also carries its own per-glyph
-// shadow on top of this — belt and suspenders, since a background image's
-// effective brightness by the time it's on screen depends on more than
-// just its own pixels (a "Light blur" export deliberately brightens toward
-// white, and iOS's own Home Screen appearance settings, e.g. a "Liquid
-// Glass"/tinted icon theme, can add another translucent layer after this
-// script has already rendered, which nothing here can see or control).
-// Uses DrawContext (draw image, then fill a translucent rect on top), the
-// same technique already proven working in the sibling blur script's
-// crop-preview overlay.
-const BACKGROUND_SCRIM_OPACITY = 0.2;
+// Optional darkening of the background image with a translucent black
+// overlay, for wallpapers so bright the per-glyph text shadows aren't
+// enough on their own. Off by default: any amount of dimming makes the
+// widget region permanently darker than the identical wallpaper around
+// it, which reads as a "dark tint" that defeats the seamless-transparency
+// effect people set the background up for in the first place.
+const BACKGROUND_DIMMING_OPACITY = { off: 0, subtle: 0.1, standard: 0.2 };
 
-function applyLegibilityScrim(image) {
+function backgroundDimmingOpacity(settings) {
+  return BACKGROUND_DIMMING_OPACITY[settings.behavior.backgroundDimming] ?? 0;
+}
+
+function applyLegibilityScrim(image, opacity) {
   const draw = new DrawContext();
   draw.size = image.size;
   draw.opaque = false;
   draw.drawImageInRect(image, new Rect(0, 0, image.size.width, image.size.height));
-  draw.setFillColor(new Color("#000000", BACKGROUND_SCRIM_OPACITY));
+  draw.setFillColor(new Color("#000000", opacity));
   draw.fillRect(new Rect(0, 0, image.size.width, image.size.height));
   return draw.getImage();
 }
 
-// The scrimmed result is cached to its own file so the full-resolution
+// The dimmed result is cached to its own file so the full-resolution
 // composite above runs once per imported image, not on every widget
 // refresh — image decoding + compositing is the biggest single allocation
 // in the memory-constrained widget process, and the result never changes
-// between imports. The opacity is baked into the filename so editing the
-// constant automatically invalidates the old cached render.
-function getScrimmedBackgroundPath(variant) {
+// between imports. The opacity is baked into the filename so changing the
+// Background Dimming setting automatically invalidates the old render.
+function getScrimmedBackgroundPath(variant, opacity) {
   const fm = getFileManager();
-  return fm.joinPath(fm.documentsDirectory(), `live-context-background-scrimmed-${variant}-${BACKGROUND_SCRIM_OPACITY}.png`);
+  return fm.joinPath(fm.documentsDirectory(), `live-context-background-scrimmed-${variant}-${opacity}.png`);
 }
 
+// Removes every cached dimmed render for the variant regardless of which
+// opacity produced it (the level may have changed since it was written) —
+// same prefix-matching approach Live Context Bridge.js uses.
 function clearScrimmedBackground(variant) {
   const fm = getFileManager();
-  const path = getScrimmedBackgroundPath(variant);
-  if (fm.fileExists(path)) fm.remove(path);
+  const docs = fm.documentsDirectory();
+  const prefix = `live-context-background-scrimmed-${variant}-`;
+  for (const name of fm.listContents(docs)) {
+    if (name.startsWith(prefix)) fm.remove(fm.joinPath(docs, name));
+  }
 }
 
-function loadBackgroundImage(variant) {
+function loadBackgroundImage(variant, settings) {
   const fm = getFileManager();
 
   try {
-    const scrimmedPath = getScrimmedBackgroundPath(variant);
+    const path = getBackgroundImagePath(variant);
+    const opacity = backgroundDimmingOpacity(settings);
+
+    // No dimming: serve the imported image untouched — no derived file,
+    // no compositing, and the widget region matches the real wallpaper
+    // around it exactly.
+    if (opacity === 0) {
+      if (!fm.fileExists(path)) return null;
+      ensureFileDownloaded(fm, path);
+      return fm.readImage(path);
+    }
+
+    const scrimmedPath = getScrimmedBackgroundPath(variant, opacity);
     if (fm.fileExists(scrimmedPath)) {
       ensureFileDownloaded(fm, scrimmedPath);
       return fm.readImage(scrimmedPath);
     }
 
-    const path = getBackgroundImagePath(variant);
     if (!fm.fileExists(path)) return null;
     ensureFileDownloaded(fm, path);
 
-    const scrimmed = applyLegibilityScrim(fm.readImage(path));
+    const scrimmed = applyLegibilityScrim(fm.readImage(path), opacity);
     fm.writeImage(scrimmedPath, scrimmed);
     return scrimmed;
   } catch (e) {
@@ -2143,12 +2167,11 @@ const PRIMARY_COLOR = Color.dynamic(Color.black(), Color.white());
 const SECONDARY_COLOR = Color.dynamic(new Color("#5f6368"), new Color("#9aa0a6"));
 
 // When a custom background image is active, text uses a fixed color
-// instead of the system light/dark dynamic, since applyLegibilityScrim
-// already darkens the image enough that white text reads fine almost
-// regardless of the photo — "dark" is only there as an escape hatch for a
-// background so light the scrim still isn't enough. Only applies within
-// the normal reactive rendering path (renderWidget); the wind-down and
-// error states render on their own fixed backgrounds regardless.
+// instead of the system light/dark dynamic — white + the per-glyph text
+// shadows read fine on most wallpapers, and "dark" is the escape hatch
+// for genuinely bright ones (Background Dimming is the stronger measure).
+// Only applies within the normal reactive rendering path (renderWidget);
+// the error state renders on its own fixed background regardless.
 //
 // Takes `hasBackgroundImage` — whether an image actually loaded — rather
 // than re-checking the enabled setting itself. If the setting is on but
@@ -2741,7 +2764,7 @@ async function renderWindDownWidget(settings, family, weather) {
   // darkness as flat black (a bright card at 11pm defeats the point of
   // this mode), just with a bit of depth.
   const variant = selectedBackgroundVariant(settings, weather);
-  const backgroundImage = variant ? loadBackgroundImage(variant) : null;
+  const backgroundImage = variant ? loadBackgroundImage(variant, settings) : null;
   if (backgroundImage) {
     widget.backgroundImage = backgroundImage;
   } else {
@@ -3430,11 +3453,12 @@ function addOptionalThirdLine(widget, model, settings, family, hasBackgroundImag
   addIconTextRow(widget, icon(settings, "wind"), detail, style);
 }
 
-// Large has room for a short agenda beneath an imminent event. Excludes
-// whatever event is already shown as primary by identifier rather than
-// assuming it's always model.events[0] — with "high-value-event", the
-// featured event comes from a separate, wider-window keyword search and
-// may not be the same one that's first in the normal-lookahead list.
+// Large has room for a short agenda beneath the primary content (any
+// state, not just events — see renderWidget's gate). Excludes whatever
+// event is already shown as primary by identifier rather than assuming
+// it's always model.events[0] — with "high-value-event", the featured
+// event comes from a separate, wider-window keyword search and may not be
+// the same one that's first in the normal-lookahead list.
 function addAgendaRows(widget, model, settings, family, hasBackgroundImage) {
   const upcoming = model.events.filter((event) => event.identifier !== model.event?.identifier).slice(0, 3);
   if (upcoming.length === 0) return;
@@ -3578,11 +3602,11 @@ function renderWidget(model, settings, family) {
   // the scheduled variant's file is missing/unreadable but the other slot
   // still has something usable.
   const variant = selectedBackgroundVariant(settings, model.weather);
-  let backgroundImage = variant ? loadBackgroundImage(variant) : null;
+  let backgroundImage = variant ? loadBackgroundImage(variant, settings) : null;
   if (!backgroundImage && variant === "dark" && settings.behavior.backgroundImageEnabled) {
-    backgroundImage = loadBackgroundImage("light");
+    backgroundImage = loadBackgroundImage("light", settings);
   } else if (!backgroundImage && variant === "light" && settings.behavior.darkBackgroundImageEnabled) {
-    backgroundImage = loadBackgroundImage("dark");
+    backgroundImage = loadBackgroundImage("dark", settings);
   }
   if (backgroundImage) widget.backgroundImage = backgroundImage;
   const hasBackgroundImage = Boolean(backgroundImage);
@@ -3595,8 +3619,10 @@ function renderWidget(model, settings, family) {
   addPrimaryRows(widget, model, settings, family, hasBackgroundImage);
   addOptionalThirdLine(widget, model, settings, family, hasBackgroundImage);
 
-  const isEventLikePriority = model.priority === "event" || model.priority === "high-value-event";
-  if (family === "large" && isEventLikePriority) {
+  // Large has the room, so the agenda shows under every state when
+  // enabled — not just the event-focused ones. Severe weather is the one
+  // exception: that screen stays focused on the alert.
+  if (family === "large" && settings.behavior.largeAgendaEnabled && model.priority !== "severe-weather") {
     addAgendaRows(widget, model, settings, family, hasBackgroundImage);
   }
 
@@ -3996,10 +4022,30 @@ const SETTINGS_SECTIONS = [
       },
       {
         label: "🌓 Background Text Color",
-        description: "Every background image gets darkened automatically so text stays legible — White works almost regardless of the photo because of that, and is the recommended default. Only switch to Dark if your background is so light the darkening still isn't enough. Only matters while a background image is set.",
+        description: "Text color over your background image. White plus the built-in text shadow reads fine on most wallpapers and is the recommended default; switch to Dark for a genuinely bright background. Only matters while a background image is set.",
         get: (s) => (s.behavior.backgroundImageTextColor === "dark" ? "Dark" : "White"),
         apply: (s, value) => { s.behavior.backgroundImageTextColor = value === "Dark" ? "dark" : "white"; },
         choices: ["White", "Dark"],
+      },
+      {
+        label: "🔅 Background Dimming",
+        description: "Darkens your background image slightly to help text stand out on very bright wallpapers. Off is the default and keeps the widget matching the wallpaper around it exactly — any dimming makes the widget region read as a permanently darker rectangle, which defeats the seamless transparent look. Only matters while a background image is set.",
+        get: (s) => {
+          const labels = { off: "Off", subtle: "Subtle", standard: "Standard" };
+          return labels[s.behavior.backgroundDimming] ?? "Off";
+        },
+        apply: (s, value) => {
+          const internal = { Off: "off", Subtle: "subtle", Standard: "standard" };
+          const newDimming = internal[value] ?? "off";
+          // The cached dimmed renders are keyed by opacity, but clearing
+          // eagerly keeps stale files from previous levels from lingering.
+          if (newDimming !== s.behavior.backgroundDimming) {
+            clearScrimmedBackground("light");
+            clearScrimmedBackground("dark");
+          }
+          s.behavior.backgroundDimming = newDimming;
+        },
+        choices: ["Off", "Subtle", "Standard"],
       },
       {
         label: "🩶 Pill Text Color",
@@ -4406,6 +4452,13 @@ const SETTINGS_SECTIONS = [
         description: "When on, overdue or due-today Reminders take over the widget. Off by default — turn on only if you want that surfaced here, since routine daily reminders would otherwise show constantly.",
         get: (s) => (s.behavior.reminderAlertEnabled ? "On" : "Off"),
         apply: (s, value) => { s.behavior.reminderAlertEnabled = value === "On"; },
+        choices: ["On", "Off"],
+      },
+      {
+        label: "🗒 Agenda on Large Widget",
+        description: "When on, the large widget adds a short \"Coming up\" list of your next few events beneath whatever it's currently showing (except during a severe weather alert, which stays focused). Small and medium widgets are unaffected — they don't have the room.",
+        get: (s) => (s.behavior.largeAgendaEnabled ? "On" : "Off"),
+        apply: (s, value) => { s.behavior.largeAgendaEnabled = value === "On"; },
         choices: ["On", "Off"],
       },
     ],
