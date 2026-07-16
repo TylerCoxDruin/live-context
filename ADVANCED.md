@@ -25,7 +25,12 @@ reading those.
 
 - **Appearance**: icon style (SF Symbols vs. emoji), text alignment,
   background image (light and dark variants), text color/shadow for
-  background images, tap-to-open.
+  background images, plain text pills (for Home Screen icon styles that
+  break colored badges, more on that below), tap-to-open.
+- **Priorities**: reorder which information wins when several things
+  apply at once. The widget shows exactly one state at a time, whichever
+  is highest on this list. Severe weather always stays on top and can't
+  be demoted.
 - **Weather**: API key, city ID, temperature units, cache limit, forecast
   data toggle, feels-like temps, morning high briefing.
 - **Weather Alerts**: active precipitation, rain nowcast, severe weather
@@ -149,6 +154,20 @@ particular app.
   and if you get it wrong it just falls back to a default icon instead of
   breaking anything.
 
+### Background Image
+
+Lets a Shortcut replace the widget's background image, handy if an
+automation already changes your wallpaper and you want the widget to keep
+up.
+
+- Get the image from wherever (Photos, Files, the output of another
+  action), then run it through a **Base64 Encode** action
+- Dictionary: `{"type": "background", "imageBase64": <the encoded text>, "variant": "light"}`.
+  `variant` is `"light"` or `"dark"` and defaults to light.
+- This only swaps the image file. You still need Background Image (or
+  Dark Background Image) turned on once in Live Context's own settings
+  for the widget to use it.
+
 ## Transparent / Blurred Background
 
 `Transparent & Blurred Widgets.js` builds a background image that makes
@@ -172,6 +191,25 @@ image you just exported. If you made both, **Dark Hours Start/End** (or
 You can also launch this tool straight from Live Context's own main menu,
 under **Create Transparent Background**, instead of hunting it down
 separately.
+
+One important caveat: if your Home Screen icon style is set to **Clear**
+(iOS 26 and up), skip this tool entirely. iOS already makes widgets
+see-through in that mode, and stacking a custom background under it washes
+things out instead of helping. Clear mode also strips the color out of the
+widget's pill badges no matter what settings you pick (confirmed by direct
+testing), so if your dates and temperatures are showing up as blank
+capsules, turn on **Appearance > Plain Text Pills**. That renders them as
+plain text, which survives Clear mode fine.
+
+## Lock Screen Widgets
+
+Live Context works as a Lock Screen widget too (iOS 16 and up): add a
+Scriptable widget to your Lock Screen, point it at the script, and it
+shows a compact text version of whatever the Home Screen widget would be
+showing, same priorities, same data. iOS forces Lock Screen widgets into
+its own tiny monochrome style, so there are no pills or colors there by
+design. You can preview it from the main menu under **Preview Widget >
+Lock Screen**.
 
 ## Diagnostics & Permissions
 

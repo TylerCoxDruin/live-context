@@ -42,8 +42,9 @@ to a quiet, minimal dark screen instead of showing everything at once.
 
 Check out [`ADVANCED.md`](ADVANCED.md) if you want to feed it live data
 from Health or other apps through Shortcuts, give it a transparent
-background that matches your wallpaper, or dig into how the script itself
-is built.
+background that matches your wallpaper, reorder which info wins when
+several things apply, put it on your Lock Screen, or dig into how the
+script itself is built.
 
 ## License
 
