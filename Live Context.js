@@ -3342,7 +3342,11 @@ function addDefaultSubtitleRow(widget, weather, settings, style, todayHighText) 
     segments.push(tempSegment);
   }
   if (segments.length === 0) {
-    segments.push(showDate ? "Date unavailable" : "Weather unavailable");
+    // A missing API key gets an actionable message rather than a generic
+    // "unavailable" — it's the single most common reason weather never
+    // shows, and a bare "unavailable" reads like a transient outage the
+    // user should wait out rather than a setup step they should take.
+    segments.push(!hasApiKey(settings) ? "Add a weather API key in settings" : "Weather unavailable");
   }
 
   addMixedRow(widget, segments, rowStyle);
@@ -3369,7 +3373,7 @@ function renderSmallDefaultView(widget, model, settings, primary, secondary) {
     addIconTextRow(widget, weatherIcon(settings, model.weather), formatTemperature(model.weather, settings), secondary);
   } else if (!hasSecondLine) {
     widget.addSpacer(4);
-    addMixedRow(widget, ["Weather unavailable"], secondary);
+    addMixedRow(widget, [!hasApiKey(settings) ? "Add API key in settings" : "Weather unavailable"], secondary);
   }
 }
 
@@ -3587,7 +3591,13 @@ const SUPPORT_URL = "https://www.buymeacoffee.com/t.cd";
 async function presentMainMenu() {
   const alert = new Alert();
   alert.title = "Live Context";
-  alert.message = "Running from the app. What would you like to do?";
+  // Setup problems surface here, at the moment someone is actually in the
+  // app to fix them — a widget can't prompt, and a console warning is
+  // invisible to most people.
+  const settings = getCurrentSettings();
+  alert.message = hasApiKey(settings)
+    ? "Running from the app. What would you like to do?"
+    : "Running from the app. What would you like to do?\n\n⚠️ No weather API key is set, so all weather features are off. Add a free one from openweathermap.org under Edit Settings → Weather.";
   alert.addAction("Preview Widget");
   alert.addAction("Edit Settings");
   alert.addAction("Run Diagnostics");

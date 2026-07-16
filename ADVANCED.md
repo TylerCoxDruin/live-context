@@ -130,6 +130,18 @@ samples that the Shortcut has to add up itself. The bridge accepts hours,
 minutes, or seconds so you can send whichever unit your Shortcut ends up
 with and skip the conversion math.
 
+There's a ready-made shortcut in the repo to save you the assembly:
+[`shortcuts/Live Context Sleep.shortcut`](shortcuts/Live%20Context%20Sleep.shortcut)
+(download it on your iPhone and open it to import). Two things to check
+after importing, since Shortcuts sometimes drops third-party action
+settings on import: open it in the editor and confirm the Scriptable
+action at the end points at **Live Context Bridge** with the Dictionary
+as its input and Run in App off. Also worth knowing: it sums all sleep
+samples in the window, and on newer iOS versions Health may include "In
+Bed" or "Awake" stages in that, which overcounts a bit. If your numbers
+look high, add a filter for the Asleep stage in the Find Health Samples
+action.
+
 - Dictionary: `{"type": "sleep", "hours": 7.2}`, or
   `{"type": "sleep", "minutes": 432}`, or `{"type": "sleep", "seconds": 25920}`
 - One way to build it:
