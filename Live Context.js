@@ -2887,7 +2887,7 @@ async function createWidget(settings, family = "small") {
     if (String(family).startsWith("accessory")) {
       if (isWindDownTime(settings, weather)) {
         const widget = renderAccessoryWidget(
-          { title: "Wind Down", subtitle: settings.behavior.windDownMessage },
+          { glyph: "moon.zzz.fill", title: "Wind Down", subtitle: settings.behavior.windDownMessage },
           family
         );
         widget.refreshAfterDate = computeWindDownRefreshDate();
@@ -2922,78 +2922,85 @@ function accessoryLines(model, settings) {
 
   switch (model.priority) {
     case "severe-weather":
-      return { title: model.alert.event ?? "Severe Weather", subtitle: formatAlertUntil(model.alert, settings) };
+      return { glyph: "exclamationmark.triangle.fill", title: model.alert.event ?? "Severe Weather", subtitle: formatAlertUntil(model.alert, settings) };
     case "high-value-event":
     case "event":
-      return { title: model.event.title, subtitle: `In ${formatCountdownValue(model.event.startDate)}` };
+      return { glyph: model.priority === "high-value-event" ? "star.circle.fill" : "calendar", title: model.event.title, subtitle: `In ${formatCountdownValue(model.event.startDate)}` };
     case "event-arrival":
-      return { title: `Welcome to ${model.event.title}!`, subtitle: model.event.location };
+      return { glyph: "figure.walk", title: `Welcome to ${model.event.title}!`, subtitle: model.event.location };
     case "rain-incoming":
-      return { title: `Rain in ${model.minutesUntilRain}m`, subtitle: temp };
+      return { glyph: "cloud.rain.fill", title: `Rain in ${model.minutesUntilRain}m`, subtitle: temp };
     case "custom-message":
-      return { title: model.message.title, subtitle: model.message.subtitle };
+      return { glyph: model.message.glyph && SFSymbol.named(model.message.glyph) ? model.message.glyph : "bell.badge.fill", title: model.message.title, subtitle: model.message.subtitle };
     case "commute":
-      return { title: `Commute ~${model.commute.minutes} min`, subtitle: formatDistance(model.commute.distanceMeters, settings) };
+      return { glyph: "car.fill", title: `Commute ~${model.commute.minutes} min`, subtitle: formatDistance(model.commute.distanceMeters, settings) };
     case "geofence":
-      return { title: `Near ${model.geofence.label}`, subtitle: `${formatDistance(model.geofence.distanceMeters, settings)} away` };
+      return { glyph: "mappin.circle.fill", title: `Near ${model.geofence.label}`, subtitle: `${formatDistance(model.geofence.distanceMeters, settings)} away` };
     case "battery":
-      return { title: `Battery ${Math.round(model.battery.level * 100)}%`, subtitle: "Charge soon" };
+      return { glyph: batterySymbolName(model.battery.level), title: `Battery ${Math.round(model.battery.level * 100)}%`, subtitle: "Charge soon" };
     case "weather":
-      return { title: describeWeather(model.weather), subtitle: temp };
+      return { glyph: weatherSymbolName(model.weather), title: describeWeather(model.weather), subtitle: temp };
     case "air-quality":
-      return { title: `AQI ${model.aqi}`, subtitle: "Poor air quality" };
+      return { glyph: "aqi.medium", title: `AQI ${model.aqi}`, subtitle: "Poor air quality" };
     case "uv":
-      return { title: `UV ${model.uvIndex}`, subtitle: "Wear sunscreen" };
+      return { glyph: "sun.max.fill", title: `UV ${model.uvIndex}`, subtitle: "Wear sunscreen" };
     case "holiday":
-      return { title: `Happy ${model.holiday}!`, subtitle: temp };
+      return { glyph: "sparkles", title: `Happy ${model.holiday}!`, subtitle: temp };
     case "birthdays":
       return {
+        glyph: "gift.fill",
         title: model.contactBirthdays.length === 1 ? "Birthday Today" : `${model.contactBirthdays.length} Birthdays Today`,
         subtitle: model.contactBirthdays.join(", "),
       };
     case "reminders":
       return {
+        glyph: "checkmark.circle.fill",
         title: model.dueReminders.length === 1 ? "1 Reminder Due" : `${model.dueReminders.length} Reminders Due`,
         subtitle: model.dueReminders[0].title,
       };
     case "steps":
-      return { title: `${model.steps.toLocaleString()} steps`, subtitle: "Today" };
+      return { glyph: "figure.walk.circle.fill", title: `${model.steps.toLocaleString()} steps`, subtitle: "Today" };
     case "sleep": {
       const hours = Math.floor(model.hours);
       const minutes = Math.round((model.hours - hours) * 60);
-      return { title: minutes > 0 ? `${hours}h ${minutes}m sleep` : `${hours}h sleep`, subtitle: "Last night" };
+      return { glyph: "bed.double.fill", title: minutes > 0 ? `${hours}h ${minutes}m sleep` : `${hours}h sleep`, subtitle: "Last night" };
     }
     case "activity": {
       const parts = [];
       if (model.activity.exerciseMinutes != null) parts.push(`${Math.round(model.activity.exerciseMinutes)}m exercise`);
       if (model.activity.activeCalories != null) parts.push(`${Math.round(model.activity.activeCalories)} cal`);
       if (model.activity.standHours != null) parts.push(`${Math.round(model.activity.standHours)}h stand`);
-      return { title: "Activity", subtitle: parts.join(" · ") };
+      return { glyph: "figure.run.circle.fill", title: "Activity", subtitle: parts.join(" · ") };
     }
     case "stocks":
-      return { title: "Markets Closed", subtitle: model.stockQuotes.map((quote) => formatStockQuote(quote)).join("  ") };
+      return { glyph: "chart.line.uptrend.xyaxis", title: "Markets Closed", subtitle: model.stockQuotes.map((quote) => formatStockQuote(quote)).join("  ") };
     case "temp-swing":
       return {
+        glyph: model.tempSwing.delta < 0 ? "thermometer.snowflake" : "thermometer.sun.fill",
         title: model.tempSwing.delta < 0 ? "Colder Tomorrow" : "Warmer Tomorrow",
         subtitle: `High ${Math.round(model.tempSwing.tomorrowHigh)}° (today ${Math.round(model.tempSwing.todayHigh)}°)`,
       };
     case "now-playing":
-      return { title: model.nowPlaying.title, subtitle: model.nowPlaying.artist };
+      return { glyph: "music.note", title: model.nowPlaying.title, subtitle: model.nowPlaying.artist };
     default:
       return {
+        glyph: weather ? weatherSymbolName(weather) : "sparkles",
         title: `${getGreeting()}, ${settings.user.name}`,
         subtitle: [settings.behavior.showDate ? formatShortOrdinalDate(settings) : null, temp].filter(Boolean).join(" · "),
       };
   }
 }
 
-// Text only, no explicit colors — the Lock Screen applies its own vibrant/
-// monochrome rendering, and fighting it with fixed colors is exactly the
-// mistake the pill system makes under forced styles. lineLimit +
-// minimumScaleFactor instead of truncation where space allows.
+// No explicit colors anywhere here — the Lock Screen applies its own
+// vibrant/monochrome rendering, and fighting it with fixed colors is
+// exactly the mistake the pill system makes under forced styles. The
+// frosted addAccessoryWidgetBackground box is only used on circular
+// (where it reads as the standard gauge circle); on rectangular it just
+// looks like a gray slab behind the text, so that family renders its
+// icon+text directly on the wallpaper the way Apple's own Lock Screen
+// widgets do.
 function renderAccessoryWidget(lines, family) {
   const widget = new ListWidget();
-  widget.addAccessoryWidgetBackground = true;
   widget.setPadding(0, 0, 0, 0);
 
   if (family === "accessoryInline") {
@@ -3006,6 +3013,7 @@ function renderAccessoryWidget(lines, family) {
   if (family === "accessoryCircular") {
     // A tiny circle fits one short value; the title (scaled down as far
     // as halved) is the most it can usefully show.
+    widget.addAccessoryWidgetBackground = true;
     widget.addSpacer();
     const label = widget.addText(lines.title);
     label.font = Font.semiboldSystemFont(13);
@@ -3017,18 +3025,32 @@ function renderAccessoryWidget(lines, family) {
   }
 
   // accessoryRectangular (and anything unrecognized): the fullest accessory
-  // layout — up to two lines, title emphasized.
+  // layout — an icon+title line with the state's own glyph, then up to two
+  // lines of detail.
   widget.addSpacer();
-  const title = widget.addText(lines.title);
-  title.font = Font.semiboldSystemFont(15);
+  const titleRow = widget.addStack();
+  titleRow.centerAlignContent();
+  const glyph = lines.glyph && SFSymbol.named(lines.glyph) ? lines.glyph : null;
+  if (glyph) {
+    const symbol = SFSymbol.named(glyph);
+    symbol.applyFont(Font.systemFont(13));
+    const image = titleRow.addImage(symbol.image);
+    image.imageSize = new Size(15, 15);
+    titleRow.addSpacer(5);
+  }
+  const title = titleRow.addText(lines.title);
+  title.font = Font.boldSystemFont(15);
   title.lineLimit = 1;
   title.minimumScaleFactor = 0.8;
+  titleRow.addSpacer();
+
   if (lines.subtitle) {
     widget.addSpacer(2);
     const subtitle = widget.addText(lines.subtitle);
     subtitle.font = Font.systemFont(13);
-    subtitle.lineLimit = 1;
-    subtitle.minimumScaleFactor = 0.8;
+    subtitle.textOpacity = 0.85;
+    subtitle.lineLimit = 2;
+    subtitle.minimumScaleFactor = 0.9;
   }
   widget.addSpacer();
   return widget;
