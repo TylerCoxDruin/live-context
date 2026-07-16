@@ -111,6 +111,11 @@ const DEFAULT_SETTINGS = {
     arrivalMessageLingerMinutes: 15, // how long the "Welcome to..." message keeps showing after an event starts
     iconStyle: "glyph", // "glyph" (system SF Symbols) | "emoji"
     textAlignment: "center", // "left" | "center" | "right" — every row, every widget size
+    // Custom ordering for the priority cascade, or null for the built-in
+    // default order (see DEFAULT_PRIORITY_ORDER — declared later in the
+    // file, which is also why this can't reference it directly here).
+    // Edited via Settings > Priorities, not typed by hand.
+    priorityOrder: null,
     // Some Home Screen icon styles (iOS 26's "Clear," confirmed by direct
     // testing) strip the color out of a pill's background fill entirely,
     // regardless of whether a custom background image is set — turning
@@ -235,6 +240,12 @@ function sanitizeSettings(s) {
   s.behavior.assumedTravelSpeedMph = orNum(s.behavior.assumedTravelSpeedMph, d.behavior.assumedTravelSpeedMph);
   if (!["left", "center", "right"].includes(s.behavior.textAlignment)) {
     s.behavior.textAlignment = d.behavior.textAlignment;
+  }
+  // normalizePriorityOrder tolerates junk entries inside a valid array,
+  // but a non-array value (bad hand-typed parameter JSON) is reset here
+  // so it doesn't linger in the stored settings forever.
+  if (s.behavior.priorityOrder != null && !Array.isArray(s.behavior.priorityOrder)) {
+    s.behavior.priorityOrder = null;
   }
   // The settings menu itself can only ever produce a valid value now (see
   // its own get/apply mapping), but a per-widget parameter override is
@@ -1517,6 +1528,80 @@ function readShortcutCustomMessage(settings) {
 
 // MARK: - Widget Model
 
+// The order the priority cascade checks states in — first match wins.
+// Severe weather (in its prominent window) and Wind Down are deliberately
+// NOT in this list: one is a safety override that should never be
+// demotable below anything, the other is a whole-widget mode that
+// preempts the cascade entirely. "default" is the fallback when nothing
+// matches, so it isn't listed either.
+const DEFAULT_PRIORITY_ORDER = [
+  "high-value-event",
+  "rain-incoming",
+  "event-arrival",
+  "event",
+  "custom-message",
+  "commute",
+  "geofence",
+  "battery",
+  "weather",
+  "air-quality",
+  "uv",
+  "holiday",
+  "birthdays",
+  "reminders",
+  "steps",
+  "sleep",
+  "activity",
+  "stocks",
+  "temp-swing",
+  "now-playing",
+];
+
+// Human-readable names for the priority picker UI.
+const PRIORITY_LABELS = {
+  "high-value-event": "Starred Event",
+  "rain-incoming": "Rain Incoming",
+  "event-arrival": "Event Arrival",
+  event: "Upcoming Event",
+  "custom-message": "Custom Message (Shortcuts)",
+  commute: "Morning Commute",
+  geofence: "Near a Place",
+  battery: "Low Battery",
+  weather: "Active Weather",
+  "air-quality": "Air Quality",
+  uv: "UV Alert",
+  holiday: "Holiday",
+  birthdays: "Birthdays",
+  reminders: "Reminders Due",
+  steps: "Steps (Shortcuts)",
+  sleep: "Sleep (Shortcuts)",
+  activity: "Activity Rings (Shortcuts)",
+  stocks: "Stocks Recap",
+  "temp-swing": "Temp Swing",
+  "now-playing": "Now Playing (Shortcuts)",
+};
+
+// Repairs a stored priority order into something safe to iterate: drops
+// keys that no longer exist (or duplicates), then appends any known key
+// the stored list is missing — so an order saved before a new state was
+// added still includes that state (at its default position among the
+// leftovers) instead of silently never showing it.
+function normalizePriorityOrder(storedOrder) {
+  const known = new Set(DEFAULT_PRIORITY_ORDER);
+  const seen = new Set();
+  const order = [];
+  for (const key of Array.isArray(storedOrder) ? storedOrder : []) {
+    if (known.has(key) && !seen.has(key)) {
+      order.push(key);
+      seen.add(key);
+    }
+  }
+  for (const key of DEFAULT_PRIORITY_ORDER) {
+    if (!seen.has(key)) order.push(key);
+  }
+  return order;
+}
+
 // Compiles each keyword into a case-insensitive regex, silently skipping
 // any pattern that isn't valid regex rather than letting bad user input
 // (typed into a plain settings text field) crash the widget.
@@ -1688,53 +1773,61 @@ async function buildWidgetModel(settings, weather) {
     ambientAlert = alert.event ?? "Weather Alert";
   }
 
-  async function pickPriority() {
-    if (highValueEvent) {
+  // One candidate per state: returns a model when the state applies right
+  // now, or null to let the cascade move on. Checked in the user's chosen
+  // order (Settings > Priorities), first match wins — this is what makes
+  // the order reorderable without duplicating any of the checks.
+  const priorityCandidates = {
+    "high-value-event": async () => {
+      if (!highValueEvent) return null;
       const travelEstimate = settings.behavior.travelEstimateEnabled
         ? await computeTravelEstimate(highValueEvent, currentLocation, settings)
         : null;
       return { priority: "high-value-event", weather, event: highValueEvent, travelEstimate, events: standardEvents };
-    }
-    if (minutesUntilRain != null) return { priority: "rain-incoming", weather, minutesUntilRain, events: standardEvents };
-    if (eventArrival) return { priority: "event-arrival", weather, event: eventArrival.event, events: standardEvents };
-    if (nextEvent && settings.behavior.eventAlertEnabled) {
+    },
+    "rain-incoming": () => (minutesUntilRain != null ? { priority: "rain-incoming", weather, minutesUntilRain, events: standardEvents } : null),
+    "event-arrival": () => (eventArrival ? { priority: "event-arrival", weather, event: eventArrival.event, events: standardEvents } : null),
+    event: async () => {
+      if (!nextEvent || !settings.behavior.eventAlertEnabled) return null;
       const travelEstimate = settings.behavior.travelEstimateEnabled
         ? await computeTravelEstimate(nextEvent, currentLocation, settings)
         : null;
       return { priority: "event", weather, event: nextEvent, travelEstimate, events: standardEvents };
+    },
+    "custom-message": () => (shortcutMessage ? { priority: "custom-message", weather, message: shortcutMessage, events: standardEvents } : null),
+    commute: () => (commute ? { priority: "commute", weather, commute, events: standardEvents } : null),
+    geofence: () => (geofence ? { priority: "geofence", weather, geofence, events: standardEvents } : null),
+    battery: () => (isBatteryLow && settings.behavior.batteryAlertEnabled ? { priority: "battery", weather, battery, events: standardEvents } : null),
+    weather: () => (isPrecipitationImminent(weather) && settings.behavior.weatherAlertEnabled ? { priority: "weather", weather, events: standardEvents } : null),
+    "air-quality": () => (badAir != null ? { priority: "air-quality", weather, aqi: badAir, events: standardEvents } : null),
+    uv: () => (uvToday != null ? { priority: "uv", weather, uvIndex: uvToday, events: standardEvents } : null),
+    holiday: () => (holiday ? { priority: "holiday", weather, holiday, events: standardEvents } : null),
+    birthdays: () => (contactBirthdays.length > 0 ? { priority: "birthdays", weather, contactBirthdays, events: standardEvents } : null),
+    reminders: () => (dueReminders.length > 0 ? { priority: "reminders", weather, dueReminders, events: standardEvents } : null),
+    steps: () => (shortcutSteps != null ? { priority: "steps", weather, steps: shortcutSteps, events: standardEvents } : null),
+    sleep: () => (shortcutSleep != null ? { priority: "sleep", weather, hours: shortcutSleep, events: standardEvents } : null),
+    activity: () => {
+      // handleActivity (Live Context Bridge.js) already requires at least
+      // one field to be non-null before writing the cache entry — this
+      // re-checks it defensively so a hand-edited/corrupted cache file
+      // can't produce an "activity" state with nothing in it to render.
+      const hasActivityData = shortcutActivity && (
+        shortcutActivity.exerciseMinutes != null ||
+        shortcutActivity.standHours != null ||
+        shortcutActivity.activeCalories != null
+      );
+      return hasActivityData ? { priority: "activity", weather, activity: shortcutActivity, events: standardEvents } : null;
+    },
+    stocks: () => (stockQuotes && stockQuotes.length > 0 ? { priority: "stocks", weather, stockQuotes, events: standardEvents } : null),
+    "temp-swing": () => (tempSwing ? { priority: "temp-swing", weather, tempSwing, events: standardEvents } : null),
+    "now-playing": () => (shortcutNowPlaying ? { priority: "now-playing", weather, nowPlaying: shortcutNowPlaying, events: standardEvents } : null),
+  };
+
+  async function pickPriority() {
+    for (const key of normalizePriorityOrder(settings.behavior.priorityOrder)) {
+      const candidate = await priorityCandidates[key]?.();
+      if (candidate) return candidate;
     }
-    // A deliberate, user-triggered message — see Live Context Bridge.js's
-    // generic "message" type — sits above the ambient/everyday states below
-    // it, on the assumption that if you bothered to send one, you want it
-    // seen promptly, but below anything calendar- or safety-driven above.
-    if (shortcutMessage) return { priority: "custom-message", weather, message: shortcutMessage, events: standardEvents };
-    if (commute) return { priority: "commute", weather, commute, events: standardEvents };
-    if (geofence) return { priority: "geofence", weather, geofence, events: standardEvents };
-    if (isBatteryLow && settings.behavior.batteryAlertEnabled) return { priority: "battery", weather, battery, events: standardEvents };
-    if (isPrecipitationImminent(weather) && settings.behavior.weatherAlertEnabled) return { priority: "weather", weather, events: standardEvents };
-    if (badAir != null) return { priority: "air-quality", weather, aqi: badAir, events: standardEvents };
-    if (uvToday != null) return { priority: "uv", weather, uvIndex: uvToday, events: standardEvents };
-    if (holiday) return { priority: "holiday", weather, holiday, events: standardEvents };
-    if (contactBirthdays.length > 0) return { priority: "birthdays", weather, contactBirthdays, events: standardEvents };
-    if (dueReminders.length > 0) return { priority: "reminders", weather, dueReminders, events: standardEvents };
-    if (shortcutSteps != null) return { priority: "steps", weather, steps: shortcutSteps, events: standardEvents };
-    if (shortcutSleep != null) return { priority: "sleep", weather, hours: shortcutSleep, events: standardEvents };
-    // handleActivity (Live Context Bridge.js) already requires at least one
-    // field to be non-null before writing the cache entry — this re-checks
-    // it defensively so a hand-edited/corrupted cache file can't produce an
-    // "activity" state with nothing actually in it to render.
-    const hasActivityData = shortcutActivity && (
-      shortcutActivity.exerciseMinutes != null ||
-      shortcutActivity.standHours != null ||
-      shortcutActivity.activeCalories != null
-    );
-    if (hasActivityData) return { priority: "activity", weather, activity: shortcutActivity, events: standardEvents };
-    if (stockQuotes && stockQuotes.length > 0) return { priority: "stocks", weather, stockQuotes, events: standardEvents };
-    if (tempSwing) return { priority: "temp-swing", weather, tempSwing, events: standardEvents };
-    // Lowest priority of all — genuinely "nothing else going on" ambient
-    // info, shown only when every other state (including the default
-    // greeting's own enrichments) has nothing to say.
-    if (shortcutNowPlaying) return { priority: "now-playing", weather, nowPlaying: shortcutNowPlaying, events: standardEvents };
     return { priority: "default", weather, todayHighText, events: standardEvents };
   }
 
@@ -3741,6 +3834,24 @@ const SETTINGS_SECTIONS = [
     ],
   },
   {
+    title: "Priorities",
+    description: "Which info wins when several apply at once.",
+    fields: [
+      {
+        label: "🔢 Priority Order",
+        description: "The widget shows exactly one thing at a time — whichever state highest on this list currently applies. Reorder it to match what you care about (e.g. put Steps above Stocks). Individual on/off toggles elsewhere still apply; this only decides who wins among the ones that are on. Severe weather alerts always stay above everything and can't be demoted.",
+        get: (s) => (s.behavior.priorityOrder ? "Customized" : "Default"),
+        apply: (s, value) => {
+          // Storing null for "matches the default" keeps the row reading
+          // "Default" instead of "Customized" after a no-op edit or reset.
+          s.behavior.priorityOrder =
+            JSON.stringify(value) === JSON.stringify(DEFAULT_PRIORITY_ORDER) ? null : value;
+        },
+        isPriorityOrderPicker: true,
+      },
+    ],
+  },
+  {
     title: "Weather",
     description: "Weather setup: API key, units, and display.",
     fields: [
@@ -4559,6 +4670,88 @@ async function presentSingleCalendarPicker(currentId, title, subtitle) {
   return result;
 }
 
+// The priority-order editor: every reorderable state listed top (wins
+// first) to bottom, tap a row to move it up one spot. Follows
+// presentCalendarPicker's render()/Save & Close pattern. Returns the new
+// order array, or null if cancelled.
+async function presentPriorityOrderPicker(storedOrder) {
+  const order = normalizePriorityOrder(storedOrder);
+  let saved = false;
+
+  const table = new UITable();
+  table.showSeparators = true;
+
+  function render() {
+    table.removeAllRows();
+
+    const header = new UITableRow();
+    header.isHeader = true;
+    header.height = 76;
+    const headerCell = header.addText(
+      "Priority Order",
+      "Tap a row to move it up one spot. The highest match wins. Severe weather alerts always stay above everything."
+    );
+    headerCell.titleFont = Font.boldSystemFont(19);
+    headerCell.subtitleFont = Font.systemFont(13);
+    headerCell.subtitleColor = SECONDARY_COLOR;
+    table.addRow(header);
+
+    order.forEach((key, index) => {
+      const row = new UITableRow();
+      row.dismissOnSelect = false;
+      row.height = 44;
+      const cell = row.addText(`${index + 1}.  ${PRIORITY_LABELS[key] ?? key}`);
+      cell.titleFont = Font.semiboldSystemFont(16);
+      cell.titleColor = PRIMARY_COLOR;
+      row.onSelect = () => {
+        if (index === 0) return;
+        [order[index - 1], order[index]] = [order[index], order[index - 1]];
+        render();
+      };
+      table.addRow(row);
+    });
+
+    const resetRow = new UITableRow();
+    resetRow.dismissOnSelect = false;
+    resetRow.height = 50;
+    const resetCell = resetRow.addText("Reset to Default Order");
+    resetCell.titleFont = Font.semiboldSystemFont(16);
+    resetCell.centerAligned();
+    resetRow.onSelect = () => {
+      order.length = 0;
+      order.push(...DEFAULT_PRIORITY_ORDER);
+      render();
+    };
+    table.addRow(resetRow);
+
+    const saveRow = new UITableRow();
+    saveRow.dismissOnSelect = true;
+    saveRow.height = 50;
+    const saveCell = saveRow.addText("Save & Close");
+    saveCell.titleFont = Font.semiboldSystemFont(18);
+    saveCell.titleColor = Color.blue();
+    saveCell.centerAligned();
+    saveRow.onSelect = () => { saved = true; };
+    table.addRow(saveRow);
+
+    const cancelRow = new UITableRow();
+    cancelRow.dismissOnSelect = true;
+    cancelRow.height = 50;
+    const cancelCell = cancelRow.addText("Cancel");
+    cancelCell.titleFont = Font.semiboldSystemFont(18);
+    cancelCell.titleColor = Color.red();
+    cancelCell.centerAligned();
+    cancelRow.onSelect = () => { saved = false; };
+    table.addRow(cancelRow);
+
+    table.reload();
+  }
+
+  render();
+  await table.present(true);
+  return saved ? order : null;
+}
+
 // A small action sheet for the background image: pick a new one from
 // Photos or Files, clear the existing one, or cancel. Returns the new
 // backgroundImageEnabled/darkBackgroundImageEnabled value, or null if
@@ -4633,6 +4826,9 @@ async function presentSettingsMenu(currentSettings) {
       const variant = fieldDef.backgroundImageVariant ?? "light";
       const currentlyEnabled = variant === "dark" ? settings.behavior.darkBackgroundImageEnabled : settings.behavior.backgroundImageEnabled;
       const value = await presentBackgroundImagePicker(currentlyEnabled, variant);
+      if (value != null) fieldDef.apply(settings, value);
+    } else if (fieldDef.isPriorityOrderPicker) {
+      const value = await presentPriorityOrderPicker(settings.behavior.priorityOrder);
       if (value != null) fieldDef.apply(settings, value);
     } else if (fieldDef.choices) {
       const value = await presentChoicePicker(fieldDef);
