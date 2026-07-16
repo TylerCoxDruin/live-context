@@ -11,7 +11,9 @@
 // immediately, unlike the widget's existing Home/Work/Gym geofence, which
 // only gets checked whenever iOS happens to refresh the widget next.
 // There's also a generic "message" type for anything else you come up
-// with later, without needing a new bridge type for it.
+// with later, without needing a new bridge type for it, and a
+// "background" type that lets a Shortcut replace the widget's background
+// image (e.g. alongside an automation that changes your wallpaper).
 //
 // This script does nothing when opened directly — it's meant to be
 // called FROM a Shortcut, via a "Run Script in Scriptable" action passing
@@ -217,6 +219,56 @@ function handleNowPlaying(input) {
   console.log(`Recorded now playing: ${title}${input.artist ? ` — ${input.artist}` : ""}.`);
 }
 
+// { type: "background", imageBase64, variant?: "light" | "dark" }
+// Replaces the widget's background image from a Shortcut — e.g. an
+// automation that swaps your wallpaper can push a matching widget
+// background at the same time. Build the Shortcut as: get the image
+// (Photos/Files/wherever) -> "Base64 Encode" -> Dictionary (type =
+// "background", imageBase64 = the encoded text) -> Run Script in
+// Scriptable. This only replaces the image file; the Background Image
+// (or Dark Background Image) setting still has to be enabled once in
+// Live Context's own settings for the widget to actually use it.
+// Filenames and the scrimmed-cache prefix below are kept in sync with
+// Live Context.js's BACKGROUND_IMAGE_FILENAMES / getScrimmedBackgroundPath.
+function handleBackground(input) {
+  const variant = String(input.variant ?? "light").toLowerCase();
+  if (!["light", "dark"].includes(variant)) {
+    throw new Error(`"variant" must be "light" or "dark" — got "${input.variant}"`);
+  }
+
+  const base64 = String(input.imageBase64 ?? "").trim();
+  if (!base64) {
+    throw new Error('"imageBase64" is required — in the Shortcut, run the image through a "Base64 Encode" action first.');
+  }
+  // Both return null (not an exception) on bad input, so each gets an
+  // explicit check with an error naming the actual problem.
+  const data = Data.fromBase64String(base64);
+  if (!data) {
+    throw new Error('"imageBase64" isn\'t valid base64 — make sure the Shortcut passes the "Base64 Encoded" output, not the raw image.');
+  }
+  const image = Image.fromData(data);
+  if (!image) {
+    throw new Error("The decoded data isn't a readable image.");
+  }
+
+  const fm = getFileManager();
+  const docs = fm.documentsDirectory();
+  const filename = variant === "dark" ? "live-context-background-dark.png" : "live-context-background.png";
+  fm.writeImage(fm.joinPath(docs, filename), image);
+
+  // Live Context caches a pre-darkened ("scrimmed") render of the
+  // background and prefers it over the source image — leaving the old one
+  // in place would keep showing the previous background forever. The
+  // scrim opacity is baked into that filename, so this matches by prefix
+  // rather than hardcoding a value that lives in the other script.
+  const scrimPrefix = `live-context-background-scrimmed-${variant}-`;
+  for (const name of fm.listContents(docs)) {
+    if (name.startsWith(scrimPrefix)) fm.remove(fm.joinPath(docs, name));
+  }
+
+  console.log(`Replaced the ${variant} background image (${image.size.width}x${image.size.height}).`);
+}
+
 // { type: "message", title, subtitle?, glyph? }
 // A generic escape hatch, not tied to any specific app — any Shortcut can
 // push an arbitrary short message onto the widget (e.g. "Package
@@ -246,6 +298,7 @@ const HANDLERS = {
   activity: handleActivity,
   nowPlaying: handleNowPlaying,
   message: handleCustomMessage,
+  background: handleBackground,
 };
 
 async function run() {

@@ -462,6 +462,11 @@ function saveStoredSettings(settings) {
 // `variant` rather than duplicated, since the light and dark slots need
 // identical handling (scrim, cache, import, clear) — just against two
 // different files.
+//
+// Live Context Bridge.js's "background" type writes these same files (and
+// clears the scrimmed cache by filename prefix) so a Shortcut can replace
+// the background — if these filenames or the scrimmed naming pattern ever
+// change, update handleBackground there to match.
 const BACKGROUND_IMAGE_FILENAMES = {
   light: "live-context-background.png",
   dark: "live-context-background-dark.png",
