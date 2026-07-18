@@ -3,7 +3,7 @@
 
 // Live Context — a modern, single-file "At a Glance" widget for Scriptable.
 // Formerly "Pixel Widget"; existing settings/cache/background files carry
-// over automatically (see migrateFromPixelWidget).
+// over automatically (see migrateStorageLayout).
 //
 // If this is useful to you, tips are welcome but never required:
 // https://www.buymeacoffee.com/t.cd
@@ -339,7 +339,7 @@ function getCurrentSettings() {
 // MARK: - File System / Cache
 
 const CACHE_FILENAME = "live-context-cache.json";
-const LEGACY_CACHE_FILENAME = "pixel-widget-cache.json"; // pre-rename name — see migrateFromPixelWidget
+const LEGACY_CACHE_FILENAME = "pixel-widget-cache.json"; // pre-rename name — see migrateStorageLayout
 
 // Prefer iCloud so the cache follows the user across devices, but fall back
 // to local storage if iCloud Drive isn't set up on this device. Memoized —
@@ -369,41 +369,98 @@ function ensureFileDownloaded(fm, path) {
   }
 }
 
-// One-time migration from this project's old name ("Pixel Widget") to its
-// current one ("Live Context"): copies each stored file (settings, cache,
-// background images) to its new name, only when the new one doesn't exist
-// yet but the old one does, so already-configured data survives the
-// rename. FileManager.copy refuses to overwrite an existing destination
-// on its own, so the fileExists check is a belt-and-suspenders guard. Old
-// files are left in place — harmless once unused, and it keeps this safe
-// to run any number of times. Once the new files exist, each check below
-// is one cheap fileExists() and nothing more.
-function migrateFromPixelWidget() {
+// Everything this project stores lives in its own folder inside
+// Scriptable's documents directory instead of littering the root — one
+// place in the Files app, one place to delete for a clean slate. Kept in
+// sync with the same constant in Live Context Bridge.js.
+const STORAGE_DIRECTORY_NAME = "Live Context";
+
+function getStorageDirectory() {
   const fm = getFileManager();
-  const renames = [
+  const dir = fm.joinPath(fm.documentsDirectory(), STORAGE_DIRECTORY_NAME);
+  if (!fm.isDirectory(dir)) fm.createDirectory(dir, true);
+  return dir;
+}
+
+function storagePath(filename) {
+  const fm = getFileManager();
+  return fm.joinPath(getStorageDirectory(), filename);
+}
+
+// One-time tidy-up of everything earlier versions scattered across the
+// root of Scriptable's folder, into the "Live Context" directory:
+//  - current live-context-* files at the root move into the folder
+//  - old pixel-widget-* files either become the current file (when the
+//    folder doesn't have one yet — the original rename migration) or get
+//    stashed untouched in a legacy/ subfolder, so the root ends up clean
+//    without destroying anything
+//  - root-level scrimmed background renders are just deleted; they're
+//    regenerable caches
+// Safe to run every launch: once the root is clean, each check below is a
+// cheap fileExists()/listContents() and nothing more.
+function migrateStorageLayout() {
+  const fm = getFileManager();
+  const root = fm.documentsDirectory();
+
+  const currentByLegacy = [
     [LEGACY_CACHE_FILENAME, CACHE_FILENAME],
     [LEGACY_SETTINGS_FILENAME, SETTINGS_FILENAME],
     [LEGACY_BACKGROUND_IMAGE_FILENAMES.light, BACKGROUND_IMAGE_FILENAMES.light],
     [LEGACY_BACKGROUND_IMAGE_FILENAMES.dark, BACKGROUND_IMAGE_FILENAMES.dark],
   ];
 
-  for (const [oldName, newName] of renames) {
-    const oldPath = fm.joinPath(fm.documentsDirectory(), oldName);
-    const newPath = fm.joinPath(fm.documentsDirectory(), newName);
-    if (!fm.fileExists(oldPath) || fm.fileExists(newPath)) continue;
-
+  // Current-name files sitting at the root (written by pre-folder
+  // versions) move straight in, unless the folder already has that file.
+  for (const [, name] of currentByLegacy) {
+    const rootPath = fm.joinPath(root, name);
+    const newPath = storagePath(name);
+    if (!fm.fileExists(rootPath)) continue;
     try {
-      ensureFileDownloaded(fm, oldPath);
-      fm.copy(oldPath, newPath);
+      ensureFileDownloaded(fm, rootPath);
+      if (fm.fileExists(newPath)) fm.remove(rootPath); // folder copy is newer authority
+      else fm.move(rootPath, newPath);
     } catch (e) {
-      console.warn(`Couldn't migrate ${oldName} to ${newName}: ${e}`);
+      console.warn(`Couldn't move ${name} into ${STORAGE_DIRECTORY_NAME}: ${e}`);
     }
+  }
+
+  // Legacy Pixel Widget files: promote when the folder lacks the current
+  // file, otherwise stash in legacy/ so the root is clean but nothing is
+  // destroyed.
+  for (const [legacyName, currentName] of currentByLegacy) {
+    const legacyPath = fm.joinPath(root, legacyName);
+    if (!fm.fileExists(legacyPath)) continue;
+    try {
+      ensureFileDownloaded(fm, legacyPath);
+      const currentPath = storagePath(currentName);
+      if (!fm.fileExists(currentPath)) {
+        fm.move(legacyPath, currentPath);
+      } else {
+        const legacyDir = storagePath("legacy");
+        if (!fm.isDirectory(legacyDir)) fm.createDirectory(legacyDir, true);
+        fm.move(legacyPath, fm.joinPath(legacyDir, legacyName));
+      }
+    } catch (e) {
+      console.warn(`Couldn't relocate ${legacyName}: ${e}`);
+    }
+  }
+
+  // Root-level scrimmed renders (either era's prefix) are derived caches —
+  // delete rather than move, they regenerate on demand.
+  try {
+    for (const name of fm.listContents(root)) {
+      if (name.startsWith("live-context-background-scrimmed-") || name.startsWith("pixel-widget-background-scrimmed-")) {
+        fm.remove(fm.joinPath(root, name));
+      }
+    }
+  } catch (e) {
+    console.warn(`Couldn't clean up scrimmed renders: ${e}`);
   }
 }
 
 function readJSONFile(filename, fallback) {
   const fm = getFileManager();
-  const path = fm.joinPath(fm.documentsDirectory(), filename);
+  const path = storagePath(filename);
   if (!fm.fileExists(path)) return fallback;
 
   try {
@@ -422,7 +479,7 @@ function readJSONFile(filename, fallback) {
 
 function writeJSONFile(filename, data) {
   const fm = getFileManager();
-  const path = fm.joinPath(fm.documentsDirectory(), filename);
+  const path = storagePath(filename);
   try {
     fm.writeString(path, JSON.stringify(data));
   } catch (e) {
@@ -500,7 +557,7 @@ function getCacheEntry(key, maxAgeMinutes) {
 // MARK: - Settings Storage
 
 const SETTINGS_FILENAME = "live-context-settings.json";
-const LEGACY_SETTINGS_FILENAME = "pixel-widget-settings.json"; // pre-rename name — see migrateFromPixelWidget
+const LEGACY_SETTINGS_FILENAME = "pixel-widget-settings.json"; // pre-rename name — see migrateStorageLayout
 
 function loadStoredSettings() {
   return readJSONFile(SETTINGS_FILENAME, {});
@@ -534,15 +591,14 @@ const BACKGROUND_IMAGE_FILENAMES = {
   light: "live-context-background.png",
   dark: "live-context-background-dark.png",
 };
-// Pre-rename names — see migrateFromPixelWidget.
+// Pre-rename names — see migrateStorageLayout.
 const LEGACY_BACKGROUND_IMAGE_FILENAMES = {
   light: "pixel-widget-background.png",
   dark: "pixel-widget-background-dark.png",
 };
 
 function getBackgroundImagePath(variant) {
-  const fm = getFileManager();
-  return fm.joinPath(fm.documentsDirectory(), BACKGROUND_IMAGE_FILENAMES[variant]);
+  return storagePath(BACKGROUND_IMAGE_FILENAMES[variant]);
 }
 
 // Optional darkening of the background image with a translucent black
@@ -574,8 +630,7 @@ function applyLegibilityScrim(image, opacity) {
 // between imports. The opacity is baked into the filename so changing the
 // Background Dimming setting automatically invalidates the old render.
 function getScrimmedBackgroundPath(variant, opacity) {
-  const fm = getFileManager();
-  return fm.joinPath(fm.documentsDirectory(), `live-context-background-scrimmed-${variant}-${opacity}.png`);
+  return storagePath(`live-context-background-scrimmed-${variant}-${opacity}.png`);
 }
 
 // Removes every cached dimmed render for the variant regardless of which
@@ -583,10 +638,10 @@ function getScrimmedBackgroundPath(variant, opacity) {
 // same prefix-matching approach Live Context Bridge.js uses.
 function clearScrimmedBackground(variant) {
   const fm = getFileManager();
-  const docs = fm.documentsDirectory();
+  const dir = getStorageDirectory();
   const prefix = `live-context-background-scrimmed-${variant}-`;
-  for (const name of fm.listContents(docs)) {
-    if (name.startsWith(prefix)) fm.remove(fm.joinPath(docs, name));
+  for (const name of fm.listContents(dir)) {
+    if (name.startsWith(prefix)) fm.remove(fm.joinPath(dir, name));
   }
 }
 
@@ -5920,7 +5975,7 @@ async function presentSettingsMenu(currentSettings) {
 // MARK: - Execution
 
 async function run() {
-  migrateFromPixelWidget();
+  migrateStorageLayout();
 
   if (config.runsInWidget) {
     Script.setWidget(await createWidget(getCurrentSettings(), config.widgetFamily));

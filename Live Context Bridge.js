@@ -32,9 +32,12 @@
 // exactly, since that's what reads these entries back out.
 
 const CACHE_FILENAME = "live-context-cache.json";
-// The project's pre-rename cache name — see migrateCacheFromPixelWidget.
-// Kept in sync with the same constants in Live Context.js.
+// The project's pre-rename cache name — see migrateCacheLocation. Kept in
+// sync with the same constants in Live Context.js.
 const LEGACY_CACHE_FILENAME = "pixel-widget-cache.json";
+// Everything lives in this folder inside Scriptable's documents directory
+// — kept in sync with Live Context.js's STORAGE_DIRECTORY_NAME.
+const STORAGE_DIRECTORY_NAME = "Live Context";
 
 let fileManagerMemo = null;
 function getFileManager() {
@@ -49,31 +52,52 @@ function getFileManager() {
   return fileManagerMemo;
 }
 
-// This script and Live Context.js each independently migrate the old
-// cache file, and whichever runs first wins — safe, since the copy only
-// happens when the new file doesn't exist yet. Without this here, a
-// Shortcut automation firing before Live Context.js had migrated would
-// create a fresh empty cache under the new name, and the real migration
-// would then skip copying the old data over — silently losing it.
-function migrateCacheFromPixelWidget() {
+// This script and Live Context.js each independently migrate the cache
+// into the storage folder, and whichever runs first wins — safe, since a
+// move/copy only happens when the folder doesn't already have the file.
+// Without this here, a Shortcut automation firing before Live Context.js
+// had migrated would create a fresh empty cache inside the folder, and
+// the real migration would then skip the old data — silently losing it.
+// Only the cache is handled here; the full root cleanup (settings,
+// backgrounds, legacy stash) is Live Context.js's job.
+function migrateCacheLocation() {
   const fm = getFileManager();
-  const oldPath = fm.joinPath(fm.documentsDirectory(), LEGACY_CACHE_FILENAME);
-  const newPath = fm.joinPath(fm.documentsDirectory(), CACHE_FILENAME);
-  if (!fm.fileExists(oldPath) || fm.fileExists(newPath)) return;
+  const newPath = storagePath(CACHE_FILENAME);
+  if (fm.fileExists(newPath)) return;
 
-  try {
-    if (fm.isFileStoredIniCloud(oldPath) && !fm.isFileDownloaded(oldPath)) {
-      fm.downloadFileFromiCloud(oldPath);
+  const candidates = [
+    fm.joinPath(fm.documentsDirectory(), CACHE_FILENAME), // pre-folder era
+    fm.joinPath(fm.documentsDirectory(), LEGACY_CACHE_FILENAME), // pre-rename era
+  ];
+  for (const oldPath of candidates) {
+    if (!fm.fileExists(oldPath)) continue;
+    try {
+      if (fm.isFileStoredIniCloud(oldPath) && !fm.isFileDownloaded(oldPath)) {
+        fm.downloadFileFromiCloud(oldPath);
+      }
+      fm.copy(oldPath, newPath);
+      return;
+    } catch (e) {
+      console.warn(`Couldn't migrate ${oldPath} into ${STORAGE_DIRECTORY_NAME}: ${e}`);
     }
-    fm.copy(oldPath, newPath);
-  } catch (e) {
-    console.warn(`Couldn't migrate ${LEGACY_CACHE_FILENAME} to ${CACHE_FILENAME}: ${e}`);
   }
+}
+
+function getStorageDirectory() {
+  const fm = getFileManager();
+  const dir = fm.joinPath(fm.documentsDirectory(), STORAGE_DIRECTORY_NAME);
+  if (!fm.isDirectory(dir)) fm.createDirectory(dir, true);
+  return dir;
+}
+
+function storagePath(filename) {
+  const fm = getFileManager();
+  return fm.joinPath(getStorageDirectory(), filename);
 }
 
 function readCacheFile() {
   const fm = getFileManager();
-  const path = fm.joinPath(fm.documentsDirectory(), CACHE_FILENAME);
+  const path = storagePath(CACHE_FILENAME);
   if (!fm.fileExists(path)) return {};
   try {
     if (fm.isFileStoredIniCloud(path) && !fm.isFileDownloaded(path)) {
@@ -93,8 +117,7 @@ function readCacheFile() {
 // whose log says what went wrong.
 function writeCache(cache) {
   const fm = getFileManager();
-  const path = fm.joinPath(fm.documentsDirectory(), CACHE_FILENAME);
-  fm.writeString(path, JSON.stringify(cache));
+  fm.writeString(storagePath(CACHE_FILENAME), JSON.stringify(cache));
 }
 
 function writeCacheEntry(key, data) {
@@ -263,9 +286,9 @@ function handleBackground(input) {
   }
 
   const fm = getFileManager();
-  const docs = fm.documentsDirectory();
+  const dir = getStorageDirectory();
   const filename = variant === "dark" ? "live-context-background-dark.png" : "live-context-background.png";
-  fm.writeImage(fm.joinPath(docs, filename), image);
+  fm.writeImage(fm.joinPath(dir, filename), image);
 
   // Live Context caches a pre-darkened ("scrimmed") render of the
   // background and prefers it over the source image — leaving the old one
@@ -273,8 +296,8 @@ function handleBackground(input) {
   // scrim opacity is baked into that filename, so this matches by prefix
   // rather than hardcoding a value that lives in the other script.
   const scrimPrefix = `live-context-background-scrimmed-${variant}-`;
-  for (const name of fm.listContents(docs)) {
-    if (name.startsWith(scrimPrefix)) fm.remove(fm.joinPath(docs, name));
+  for (const name of fm.listContents(dir)) {
+    if (name.startsWith(scrimPrefix)) fm.remove(fm.joinPath(dir, name));
   }
 
   console.log(`Replaced the ${variant} background image (${image.size.width}x${image.size.height}).`);
@@ -353,7 +376,7 @@ const HANDLERS = {
 };
 
 async function run() {
-  migrateCacheFromPixelWidget();
+  migrateCacheLocation();
 
   const raw = args.shortcutParameter;
   if (!raw) {

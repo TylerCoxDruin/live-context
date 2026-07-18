@@ -14,7 +14,11 @@ read [`README.md`](README.md) instead.
 | [`Permission Check.js`](Permission%20Check.js) | Walks through every permission prompt (Location, Calendar, etc.) up front instead of letting them surprise you later. The same check is also built into the widget's own main menu. |
 
 Everything lives in one script (`Live Context.js`). There's no separate
-config file and no companion app.
+config file and no companion app. All the data it stores (settings,
+cache, background images) sits in a single **Live Context** folder inside
+Scriptable's own folder in the Files app, created automatically. Anything
+older versions left loose in the Scriptable folder gets tidied into it on
+the next run, so deleting that one folder is a full clean slate.
 
 ## Full Settings Reference
 
