@@ -2573,6 +2573,10 @@ const PILL_COLORS = {
   warmSwing: new Color("#f97316"),
 };
 
+// Border thickness for the Outlined pill style — shared by every outlined
+// shape so they all read as the same weight.
+const OUTLINED_PILL_BORDER_WIDTH = 3;
+
 // US AQI severity coloring, matching the EPA scale's own bands.
 function aqiPillColor(aqi) {
   if (aqi >= 201) return new Color("#8b5cf6"); // very unhealthy+
@@ -2631,7 +2635,7 @@ function addPill(container, text, backgroundColor, style, iconDescriptor, url) {
   // Outlined: a colored border with white text, no fill — nothing for a
   // fill-stripping icon style (see currentPillStyle) to blank out.
   if (currentPillStyle === "outlined") {
-    pill.borderWidth = 2;
+    pill.borderWidth = OUTLINED_PILL_BORDER_WIDTH;
     pill.borderColor = backgroundColor;
   } else {
     pill.backgroundColor = backgroundColor;
@@ -2684,7 +2688,7 @@ function addDateBadge(container, month, day, style, url) {
   // layering needs fills to read at all.
   if (currentPillStyle === "outlined") {
     const outer = container.addStack();
-    outer.borderWidth = 2;
+    outer.borderWidth = OUTLINED_PILL_BORDER_WIDTH;
     outer.borderColor = PILL_COLORS.dateMonth;
     outer.cornerRadius = style.iconSize;
     outer.setPadding(4, 10, 4, 10);
