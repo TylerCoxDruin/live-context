@@ -117,13 +117,15 @@ const DEFAULT_SETTINGS = {
     // file, which is also why this can't reference it directly here).
     // Edited via Settings > Priorities, not typed by hand.
     priorityOrder: null,
-    // Some Home Screen icon styles (iOS 26's "Clear," confirmed by direct
-    // testing) strip the color out of a pill's background fill entirely,
-    // regardless of whether a custom background image is set — turning
-    // every colored badge blank. Plain text has no fill to strip, so it
-    // survives; this trades the colorful badge look for readability under
-    // those styles. Off by default since most icon styles render pills fine.
-    plainTextPillsEnabled: false,
+    // How data badges render — "filled" | "outlined" | "text". Filled is
+    // the classic solid-color pill. The other two exist because some Home
+    // Screen icon styles (iOS 26's "Clear," confirmed by direct testing)
+    // strip the color out of a pill's background fill entirely, turning
+    // every filled badge blank: "text" (plain text, confirmed to survive
+    // Clear) and "outlined" (a colored border with matching text, no fill
+    // for Clear to strip). Replaces the older plainTextPillsEnabled
+    // boolean, which sanitizeSettings still migrates.
+    pillStyle: "filled",
     // Optional darkening baked into the background image for legibility on
     // very bright wallpapers — "off" | "subtle" | "standard". Off by
     // default: any dimming makes the widget region visibly darker than the
@@ -256,6 +258,12 @@ function sanitizeSettings(s) {
   }
   if (!["off", "subtle", "standard"].includes(s.behavior.backgroundDimming)) {
     s.behavior.backgroundDimming = d.behavior.backgroundDimming;
+  }
+  // Migrates the older plainTextPillsEnabled boolean into pillStyle —
+  // anyone who had turned it on keeps their plain-text pills without
+  // touching a setting.
+  if (!["filled", "outlined", "text"].includes(s.behavior.pillStyle)) {
+    s.behavior.pillStyle = s.behavior.plainTextPillsEnabled === true ? "text" : d.behavior.pillStyle;
   }
   // The settings menu itself can only ever produce a valid value now (see
   // its own get/apply mapping), but a per-widget parameter override is
@@ -2370,15 +2378,15 @@ function customMessageIcon(settings, message) {
 let currentTextAlignment = "center";
 
 // Same reasoning and lifecycle as currentTextAlignment above — set once
-// per render, read by addMixedRow below rather than threaded through
-// every individual state's rendering case. Exists because some Home
-// Screen icon styles (iOS 26's "Clear," confirmed by direct testing) strip
-// the color out of a pill's background fill entirely, regardless of
-// whether a custom background image is even set — turning every colored
-// badge into an unreadable blank shape. Plain text has no background fill
-// to strip, so it survives those styles; this flag switches every pill in
-// the widget over to it.
-let plainTextPillsEnabled = false;
+// per render, read by the pill primitives below rather than threaded
+// through every individual state's rendering case. "filled" is the classic
+// solid badge; "outlined" draws a colored border with matching text and no
+// fill; "text" drops the badge entirely. The latter two exist because some
+// Home Screen icon styles (iOS 26's "Clear," confirmed by direct testing)
+// strip the color out of a pill's background fill, turning every filled
+// badge into an unreadable blank shape — a border and plain text have no
+// fill to strip.
+let currentPillStyle = "filled";
 
 // Wraps `buildContent(row)` in an outer stack with spacers placed
 // according to currentTextAlignment: both sides (centered, the original
@@ -2472,8 +2480,11 @@ function aqiPillColor(aqi) {
 // factored out so a standalone flat pill and a chip nested inside a frame
 // draw their content identically instead of one wrapping the other and
 // compounding two independent paddings into a lopsided result.
-function addPillContent(pillStack, text, style, iconDescriptor) {
-  const pillTextColor = style.pillTextColor ?? Color.white();
+// `contentColor` overrides the default white/black pill text — used by the
+// outlined style, where the text matches the border color instead of
+// sitting on a fill.
+function addPillContent(pillStack, text, style, iconDescriptor, contentColor) {
+  const pillTextColor = contentColor ?? style.pillTextColor ?? Color.white();
 
   const label = pillStack.addText(text);
   label.font = style.font;
@@ -2511,12 +2522,19 @@ function addPillContent(pillStack, text, style, iconDescriptor) {
 // so setting it unconditionally is safe: it's simply ignored on small.
 function addPill(container, text, backgroundColor, style, iconDescriptor, url) {
   const pill = container.addStack();
-  pill.backgroundColor = backgroundColor;
+  // Outlined: a colored border with matching text, no fill — nothing for a
+  // fill-stripping icon style (see currentPillStyle) to blank out.
+  if (currentPillStyle === "outlined") {
+    pill.borderWidth = 2;
+    pill.borderColor = backgroundColor;
+  } else {
+    pill.backgroundColor = backgroundColor;
+  }
   pill.cornerRadius = style.iconSize;
   pill.setPadding(4, 10, 4, 10);
   pill.centerAlignContent();
   if (url) pill.url = url;
-  addPillContent(pill, text, style, iconDescriptor);
+  addPillContent(pill, text, style, iconDescriptor, currentPillStyle === "outlined" ? backgroundColor : null);
 }
 
 // A vivid chip inset in a thin, even gray frame (the temperature pill).
@@ -2524,8 +2542,15 @@ function addPill(container, text, backgroundColor, style, iconDescriptor, url) {
 // own full padding around its text, so the frame reads as a ring around
 // an otherwise-normal pill rather than a second, independently-sized layer.
 // `url` goes on the outer frame so the whole badge (not just the chip) is
-// tappable.
+// tappable. In the outlined style the frame-in-frame look collapses to a
+// single outlined capsule (a ring inside a ring just reads as clutter), so
+// it delegates to addPill, whose outlined branch handles that.
 function addFramedPill(container, text, color, style, iconDescriptor, url) {
+  if (currentPillStyle === "outlined") {
+    addPill(container, text, color, style, iconDescriptor, url);
+    return;
+  }
+
   const outer = container.addStack();
   outer.backgroundColor = PILL_COLORS.frame;
   outer.cornerRadius = style.iconSize;
@@ -2548,6 +2573,27 @@ function addFramedPill(container, text, color, style, iconDescriptor, url) {
 // the outer frame so both the month chip and the day number are one
 // shared tap target.
 function addDateBadge(container, month, day, style, url) {
+  // Outlined: one capsule, month in the accent color, day in the row's own
+  // text color — the chip-in-frame layering needs fills to read at all.
+  if (currentPillStyle === "outlined") {
+    const outer = container.addStack();
+    outer.borderWidth = 2;
+    outer.borderColor = PILL_COLORS.dateMonth;
+    outer.cornerRadius = style.iconSize;
+    outer.setPadding(4, 10, 4, 10);
+    outer.centerAlignContent();
+    if (url) outer.url = url;
+
+    addPillContent(outer, month, style, null, PILL_COLORS.dateMonth);
+    outer.addSpacer(6);
+    const dayLabel = outer.addText(day);
+    dayLabel.font = style.font;
+    dayLabel.textColor = style.color;
+    dayLabel.lineLimit = 1;
+    if (style.shadow) applyTextShadow(dayLabel, style.shadow);
+    return;
+  }
+
   const outer = container.addStack();
   outer.backgroundColor = PILL_COLORS.frame;
   outer.cornerRadius = style.iconSize;
@@ -2588,7 +2634,7 @@ function addDateBadge(container, month, day, style, url) {
 // `url`, when given, makes the whole row one tap target — for plain
 // single-string rows (no per-segment pill urls to fall back on), like the
 // small wind-down layout's title/message lines.
-// The plainTextPillsEnabled fallback for any pill/framedPill/dateBadge
+// The "text" pill-style fallback for any pill/framedPill/dateBadge
 // segment — same text/shadow/tap-target handling as the plain-string
 // branch just below, factored out since three segment types need it.
 function addPlainTextSegment(row, text, style, url) {
@@ -2611,18 +2657,18 @@ function addMixedRow(widget, segments, style, url) {
         label.lineLimit = 1;
         if (style.shadow) applyTextShadow(label, style.shadow);
       } else if (segment.dateBadge) {
-        if (plainTextPillsEnabled) {
+        if (currentPillStyle === "text") {
           addPlainTextSegment(row, `${segment.dateBadge.month} ${segment.dateBadge.day}`, style, segment.url);
         } else {
           addDateBadge(row, segment.dateBadge.month, segment.dateBadge.day, style, segment.url);
         }
       } else if (segment.framedPill) {
-        if (plainTextPillsEnabled) {
+        if (currentPillStyle === "text") {
           addPlainTextSegment(row, segment.framedPill, style, segment.url);
         } else {
           addFramedPill(row, segment.framedPill, segment.color, style, segment.icon, segment.url);
         }
-      } else if (plainTextPillsEnabled) {
+      } else if (currentPillStyle === "text") {
         addPlainTextSegment(row, segment.pill, style, segment.url);
       } else {
         addPill(row, segment.pill, segment.color, style, segment.icon, segment.url);
@@ -2894,7 +2940,7 @@ async function createWidget(settings, family = "small") {
   // error fallback, if something throws immediately — so every row this
   // render produces (see addAlignedRow) picks it up consistently.
   currentTextAlignment = settings.behavior.textAlignment ?? "center";
-  plainTextPillsEnabled = Boolean(settings.behavior.plainTextPillsEnabled);
+  currentPillStyle = settings.behavior.pillStyle ?? "filled";
 
   try {
     // Fetched once here (cached, so cheap) and threaded through both
@@ -4049,24 +4095,30 @@ const SETTINGS_SECTIONS = [
       },
       {
         label: "🩶 Pill Text Color",
-        description: "Pills (the date badge, temperature, etc.) normally use white text on their own colored fill, separately from the setting above. Confirmed by testing: this alone does not fix iOS 26's \"Clear\" Home Screen icon style, which strips pill colors regardless of this setting — see Plain Text Pills below for what actually works there. Only matters while a background image is set.",
+        description: "Pills (the date badge, temperature, etc.) normally use white text on their own colored fill, separately from the setting above. Confirmed by testing: this alone does not fix iOS 26's \"Clear\" Home Screen icon style, which strips pill colors regardless of this setting — see Pill Style below for the Outlined and Plain Text options that avoid the problem. Only matters while a background image is set.",
         get: (s) => (s.behavior.backgroundImagePillTextColor === "dark" ? "Dark" : "White"),
         apply: (s, value) => { s.behavior.backgroundImagePillTextColor = value === "Dark" ? "dark" : "white"; },
         choices: ["White", "Dark"],
       },
       {
         label: "🖤 Text Shadow",
-        description: "Adds a soft shadow behind every piece of text and pill while a background image is set, so it stays readable regardless of what's behind it. On is recommended, but turn it off if you'd rather have flat text without the halo. Doesn't fix iOS 26's \"Clear\" Home Screen icon style either (see Plain Text Pills below). Only matters while a background image is set.",
+        description: "Adds a soft shadow behind every piece of text and pill while a background image is set, so it stays readable regardless of what's behind it. On is recommended, but turn it off if you'd rather have flat text without the halo. Doesn't fix iOS 26's \"Clear\" Home Screen icon style either (see Pill Style below). Only matters while a background image is set.",
         get: (s) => (s.behavior.backgroundImageTextShadowEnabled ? "On" : "Off"),
         apply: (s, value) => { s.behavior.backgroundImageTextShadowEnabled = value === "On"; },
         choices: ["On", "Off"],
       },
       {
-        label: "🔤 Plain Text Pills",
-        description: "Some Home Screen icon styles (confirmed with iOS 26's \"Clear\" style) strip the color out of pills entirely, turning dates/temperatures/etc. into blank shapes — this happens even without a background image set. Turn this on to show that information as plain text instead of colored badges. You lose the colorful badge look, but it survives icon styles that break pills outright.",
-        get: (s) => (s.behavior.plainTextPillsEnabled ? "On" : "Off"),
-        apply: (s, value) => { s.behavior.plainTextPillsEnabled = value === "On"; },
-        choices: ["On", "Off"],
+        label: "💊 Pill Style",
+        description: "How data badges (the date, temperature, battery, etc.) render. Filled is the classic solid-color pill. Some Home Screen icon styles (confirmed with iOS 26's \"Clear\" style) strip the color out of filled pills entirely, turning them into blank shapes even without a background image set — Plain Text is confirmed to survive that, and Outlined (a colored border with matching text, no fill to strip) keeps more of the badge look and is worth trying first.",
+        get: (s) => {
+          const labels = { filled: "Filled", outlined: "Outlined", text: "Plain Text" };
+          return labels[s.behavior.pillStyle] ?? "Filled";
+        },
+        apply: (s, value) => {
+          const internal = { Filled: "filled", Outlined: "outlined", "Plain Text": "text" };
+          s.behavior.pillStyle = internal[value] ?? "filled";
+        },
+        choices: ["Filled", "Outlined", "Plain Text"],
       },
       {
         label: "👆 Tap to Open",

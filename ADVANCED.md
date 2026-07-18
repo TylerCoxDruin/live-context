@@ -25,9 +25,9 @@ reading those.
 
 - **Appearance**: icon style (SF Symbols vs. emoji), text alignment,
   background image (light and dark variants), text color/shadow and
-  optional dimming for background images, plain text pills (for Home
-  Screen icon styles that break colored badges, more on that below),
-  tap-to-open.
+  optional dimming for background images, pill style (filled, outlined,
+  or plain text, for Home Screen icon styles that break filled badges,
+  more on that below), tap-to-open.
 - **Priorities**: reorder which information wins when several things
   apply at once. The widget shows exactly one state at a time, whichever
   is highest on this list. Severe weather always stays on top and can't
@@ -232,11 +232,12 @@ separately.
 One important caveat: if your Home Screen icon style is set to **Clear**
 (iOS 26 and up), skip this tool entirely. iOS already makes widgets
 see-through in that mode, and stacking a custom background under it washes
-things out instead of helping. Clear mode also strips the color out of the
-widget's pill badges no matter what settings you pick (confirmed by direct
-testing), so if your dates and temperatures are showing up as blank
-capsules, turn on **Appearance > Plain Text Pills**. That renders them as
-plain text, which survives Clear mode fine.
+things out instead of helping. Clear mode also strips the color out of
+filled pill badges no matter what color settings you pick (confirmed by
+direct testing), so if your dates and temperatures are showing up as blank
+capsules, change **Appearance > Pill Style**. Plain Text is confirmed to
+survive Clear mode; Outlined keeps more of the badge look by drawing a
+colored border with no fill for Clear to strip, and is worth trying first.
 
 ## Lock Screen Widgets
 
