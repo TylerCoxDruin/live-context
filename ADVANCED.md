@@ -48,7 +48,8 @@ reading those.
 - **Wind Down**: the nightly quiet mode. Hours (fixed or sunset-based),
   message, charge reminder, tomorrow preview, moon phase icon, and a
   Shortcut to run when tapped.
-- **Places**: geofence alert and radius, Home/Work/Gym addresses, morning
+- **Places**: geofence alert and radius, how long the "At Home/Work/Gym"
+  card stays up after you arrive, Home/Work/Gym addresses, morning
   commute estimate.
 - **Shortcuts**: on/off plus a freshness window for every Shortcuts-fed
   data type (the full Bridge guide is further down).

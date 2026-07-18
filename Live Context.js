@@ -174,6 +174,11 @@ const DEFAULT_SETTINGS = {
   location: {
     geofenceEnabled: false, // off until at least one address below is set
     radiusMeters: 150,
+    // How long the "At Home/Work/Gym" card keeps claiming the widget after
+    // arrival before quietly stepping aside for other states. 0 = the
+    // whole visit — but sitting at work for eight hours doesn't need eight
+    // hours of being told so.
+    geofenceLingerMinutes: 45,
     // Plain street addresses rather than lat/lon — geocoded on demand (and
     // cached, since geocoding needs the network) via Nominatim; see
     // geocodeAddress / geocodeViaNominatim.
@@ -245,6 +250,7 @@ function sanitizeSettings(s) {
   s.behavior.highValueLookaheadHours = orNum(s.behavior.highValueLookaheadHours, d.behavior.highValueLookaheadHours);
   s.behavior.arrivalMessageLingerMinutes = orNum(s.behavior.arrivalMessageLingerMinutes, d.behavior.arrivalMessageLingerMinutes);
   s.location.radiusMeters = orNum(s.location.radiusMeters, d.location.radiusMeters);
+  s.location.geofenceLingerMinutes = orNum(s.location.geofenceLingerMinutes, d.location.geofenceLingerMinutes);
   s.stocks.displayMinutes = orNum(s.stocks.displayMinutes, d.stocks.displayMinutes);
   if (!Array.isArray(s.stocks.tickers)) s.stocks.tickers = [];
   s.behavior.assumedTravelSpeedMph = orNum(s.behavior.assumedTravelSpeedMph, d.behavior.assumedTravelSpeedMph);
@@ -1258,9 +1264,42 @@ function effectiveGeofenceRadius(currentLocation, radiusMeters) {
   return radiusMeters + Math.min(accuracy, GEOFENCE_ACCURACY_BUFFER_CAP_METERS);
 }
 
-// Returns `{ label, distanceMeters }` for the first configured place the
-// device is currently within range of, or null if the feature is off, no
-// place is configured, or currentLocation is null (permission denied/error).
+// Remembers when the device first showed up at the currently-matched
+// place, so the card can say "since 9:02 AM" and expire after
+// geofenceLingerMinutes instead of occupying the widget for an entire
+// workday repeating something that stopped being news after the first few
+// minutes. The timestamp only resets when the matched place changes or
+// after the device has actually been detected away (clearGeofencePresence)
+// — a single failed location fix in between doesn't restart the clock.
+const GEOFENCE_PRESENCE_KEY = "geofencePresence";
+
+function trackGeofencePresence(label) {
+  const entry = getCacheEntry(GEOFENCE_PRESENCE_KEY)?.data;
+  if (entry?.place === label && Number.isFinite(entry.arrivedAt)) return entry.arrivedAt;
+  const arrivedAt = Date.now();
+  setCacheEntry(GEOFENCE_PRESENCE_KEY, { place: label, arrivedAt });
+  return arrivedAt;
+}
+
+function clearGeofencePresence() {
+  if (getCacheEntry(GEOFENCE_PRESENCE_KEY)) clearCacheEntry(GEOFENCE_PRESENCE_KEY);
+}
+
+// Shared by both detection paths below: stamps (or reuses) the arrival
+// time and applies the linger window — after geofenceLingerMinutes at the
+// same place the state stops claiming the widget (0 = never expires).
+function geofenceResult(label, distanceMeters, coords, settings) {
+  const arrivedAt = trackGeofencePresence(label);
+  const lingerMinutes = settings.location.geofenceLingerMinutes;
+  if (lingerMinutes > 0 && Date.now() - arrivedAt > lingerMinutes * 60000) return null;
+  return { label, distanceMeters, coords, arrivedAt };
+}
+
+// Returns `{ label, distanceMeters, coords, arrivedAt }` for the first
+// configured place the device is currently within range of, or null if
+// the feature is off, no place is configured, currentLocation is null
+// (permission denied/error), or the presence has outlived its linger
+// window.
 async function checkGeofence(settings, currentLocation) {
   // A fresh Shortcuts "arrived" flag (see MARK: - Shortcuts Bridge) wins
   // immediately — independent of the Geofence Alert toggle below, and
@@ -1276,7 +1315,7 @@ async function checkGeofence(settings, currentLocation) {
     const address = matched && settings.location[matched.settingsKey];
     if (matched && address) {
       const coords = await geocodeAddress(address);
-      return { label: matched.label, distanceMeters: 0, coords };
+      return geofenceResult(matched.label, 0, coords, settings);
     }
   }
 
@@ -1302,10 +1341,14 @@ async function checkGeofence(settings, currentLocation) {
     if (distanceMeters <= effectiveRadius) {
       // coords is kept around (not just distance/label) so tap-to-open can
       // route straight to this place in Maps instead of just naming it.
-      return { label: place.label, distanceMeters, coords };
+      return geofenceResult(place.label, distanceMeters, coords, settings);
     }
   }
 
+  // Genuinely detected away from every configured place (not just a failed
+  // fix, which bails out earlier) — reset so the next arrival restarts the
+  // clock.
+  clearGeofencePresence();
   return null;
 }
 
@@ -1603,7 +1646,7 @@ const PRIORITY_LABELS = {
   event: "Upcoming Event",
   "custom-message": "Custom Message (Shortcuts)",
   commute: "Morning Commute",
-  geofence: "Near a Place",
+  geofence: "At a Place",
   battery: "Low Battery",
   weather: "Active Weather",
   "air-quality": "Air Quality",
@@ -3003,7 +3046,7 @@ function accessoryLines(model, settings) {
     case "commute":
       return { glyph: "car.fill", title: `Commute ~${model.commute.minutes} min`, subtitle: formatDistance(model.commute.distanceMeters, settings) };
     case "geofence":
-      return { glyph: "mappin.circle.fill", title: `Near ${model.geofence.label}`, subtitle: `${formatDistance(model.geofence.distanceMeters, settings)} away` };
+      return { glyph: "mappin.circle.fill", title: `At ${model.geofence.label}`, subtitle: `Since ${formatClockTime(new Date(model.geofence.arrivedAt), settings)}` };
     case "battery":
       return { glyph: batterySymbolName(model.battery.level), title: `Battery ${Math.round(model.battery.level * 100)}%`, subtitle: "Charge soon" };
     case "weather":
@@ -3224,10 +3267,14 @@ function addPrimaryRows(widget, model, settings, family, hasBackgroundImage) {
       ], secondary);
       break;
 
+    // "At Work · since 9:02 AM", not "Near Work · 422 ft away" — inside
+    // the radius, a distance is noise at best and wrong-feeling at worst
+    // (the geocoded address pin can easily sit a few hundred feet from
+    // where you actually are within the same building/lot).
     case "geofence":
-      addIconTextRow(widget, icon(settings, "geofence"), `Near ${model.geofence.label}`, primary);
+      addIconTextRow(widget, icon(settings, "geofence"), `At ${model.geofence.label}`, primary);
       widget.addSpacer(6);
-      addMixedRow(widget, [{ pill: formatDistance(model.geofence.distanceMeters, settings), color: PILL_COLORS.distance }, "away"], secondary);
+      addMixedRow(widget, ["Since", { pill: formatClockTime(new Date(model.geofence.arrivedAt), settings), color: PILL_COLORS.distance }], secondary);
       break;
 
     case "battery":
@@ -4648,6 +4695,16 @@ const SETTINGS_SECTIONS = [
           if (Number.isFinite(radius)) s.location.radiusMeters = Math.max(radius, 0);
         },
         suffix: "m",
+      },
+      {
+        label: "⏳ Place Card Duration",
+        description: "How many minutes the \"At Home/Work/Gym\" card stays on the widget after you arrive, before making room for other info. You're still there — the widget just stops repeating it. 0 keeps it up for the whole visit.",
+        get: (s) => String(s.location.geofenceLingerMinutes),
+        apply: (s, value) => {
+          const minutes = Number(value);
+          if (Number.isFinite(minutes)) s.location.geofenceLingerMinutes = Math.max(minutes, 0);
+        },
+        suffix: "min",
       },
       {
         label: "🏠 Home Address",
