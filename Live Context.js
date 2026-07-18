@@ -3969,7 +3969,12 @@ function renderWidget(model, settings, family) {
 // own tap target deep-linking to its state's app on medium/large.
 function addSecondaryCardChips(widget, model, settings, family, hasBackgroundImage) {
   if (family === "small" || !settings.behavior.multiCardEnabled) return;
-  const cards = model.secondaryCards ?? [];
+  // One chip on medium, two on large — a medium card already carries a
+  // title and a data row, and stacking a second chip beside the first
+  // reads as clutter at that size. The chips are priority-ordered, so
+  // medium keeps the most important runner-up.
+  const maxChips = family === "large" ? 2 : 1;
+  const cards = (model.secondaryCards ?? []).slice(0, maxChips);
   if (cards.length === 0) return;
 
   const chipStyle = withColor(
@@ -4483,7 +4488,7 @@ const SETTINGS_SECTIONS = [
       },
       {
         label: "🃏 Secondary Cards",
-        description: "When on, medium and large widgets also show the next couple of states that currently apply as small tappable chips under the main card — the way Pixel's own At a Glance pairs its main card with secondary chips. They follow your Priority Order and Pill Style. Small widgets never have the room, so they always show just the main card.",
+        description: "When on, the widget also shows what else currently applies as small tappable chips under the main card — one chip on medium, up to two on large — the way Pixel's own At a Glance pairs its main card with secondary chips. They follow your Priority Order and Pill Style. Small widgets never have the room, so they always show just the main card.",
         get: (s) => (s.behavior.multiCardEnabled ? "On" : "Off"),
         apply: (s, value) => { s.behavior.multiCardEnabled = value === "On"; },
         choices: ["On", "Off"],

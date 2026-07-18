@@ -32,7 +32,8 @@ reading those.
   apply at once, and toggle the secondary chips. The main card shows
   whichever state is highest on this list; on medium and large widgets,
   the next couple of applicable states show as small tappable chips
-  underneath it, like the real At a Glance. Severe weather always stays
+  underneath it (one on medium, up to two on large), like the real At a
+  Glance. Severe weather always stays
   on top and can't be demoted. There's also an opt-in **Smart
   Priorities** mode: the widget learns which of your personal stats
   (steps, sleep, activity, stocks, now playing) tend to have data at
