@@ -29,9 +29,11 @@ reading those.
   or plain text, for Home Screen icon styles that break filled badges,
   more on that below), tap-to-open.
 - **Priorities**: reorder which information wins when several things
-  apply at once. The widget shows exactly one state at a time, whichever
-  is highest on this list. Severe weather always stays on top and can't
-  be demoted.
+  apply at once, and toggle the secondary chips. The main card shows
+  whichever state is highest on this list; on medium and large widgets,
+  the next couple of applicable states show as small tappable chips
+  underneath it, like the real At a Glance. Severe weather always stays
+  on top and can't be demoted.
 - **Weather**: API key, city ID, temperature units, cache limit, forecast
   data toggle, feels-like temps, morning high briefing.
 - **Weather Alerts**: active precipitation, rain nowcast, severe weather
@@ -41,8 +43,10 @@ reading those.
 - **Profile**: your name, locale, birthday.
 - **Calendar & Events**: which calendars to search, the work schedule
   calendar (more on that below), event lookahead, high-value event
-  keywords, arrival detection, travel time estimate, holidays, contacts'
-  birthdays, reminders, and the "Coming up" agenda on the large widget.
+  keywords, arrival detection, travel time estimate (real driving routes
+  via the free OSRM service, with a straight-line fallback), holidays,
+  contacts' birthdays, reminders, and the "Coming up" agenda on the large
+  widget.
 - **Battery**: low battery threshold, alerts, and a Shortcut to run when
   you tap the widget during a low-battery alert.
 - **Wind Down**: the nightly quiet mode. Hours (fixed or sunset-based),

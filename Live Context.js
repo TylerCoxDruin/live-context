@@ -117,6 +117,11 @@ const DEFAULT_SETTINGS = {
     // file, which is also why this can't reference it directly here).
     // Edited via Settings > Priorities, not typed by hand.
     priorityOrder: null,
+    // Medium/large widgets show the next couple of applicable states as
+    // small chips under the primary card — the actual At a Glance
+    // structure (one main card plus quiet secondary chips) rather than
+    // strictly one thing at a time.
+    multiCardEnabled: true,
     // How data badges render — "filled" | "outlined" | "text". Filled is
     // the classic solid-color pill. The other two exist because some Home
     // Screen icon styles (iOS 26's "Clear," confirmed by direct testing)
@@ -1784,7 +1789,7 @@ function findHighValueEvent(events, patterns) {
 // "Near Home" card would otherwise mask the commute for the whole window.
 // Health-adjacent heads-ups (AQI, UV) sit just under live weather; the
 // rare-and-personal ones (holiday, birthdays) above the routine recaps.
-async function buildWidgetModel(settings, weather) {
+async function buildWidgetModel(settings, weather, collectSecondary = false) {
   const [events, forecast, stockQuotes, severeAlerts, contactBirthdays, dueReminders, airQuality] = await Promise.all([
     fetchUpcomingEvents(settings),
     fetchForecast(settings, weather),
@@ -1952,12 +1957,24 @@ async function buildWidgetModel(settings, weather) {
     "now-playing": () => (shortcutNowPlaying ? { priority: "now-playing", weather, nowPlaying: shortcutNowPlaying, events: standardEvents } : null),
   };
 
+  // First match wins as the primary card; with `collectSecondary` the next
+  // two matches ride along as model.secondaryCards for the chip row under
+  // the main content (see addSecondaryCardChips) — the real At a Glance
+  // shows a primary card plus small chips, not one thing at a time. Capped
+  // at two runners-up so evaluating them stays cheap; the default greeting
+  // is a fallback, never a chip.
   async function pickPriority() {
+    const candidates = [];
     for (const key of normalizePriorityOrder(settings.behavior.priorityOrder)) {
       const candidate = await priorityCandidates[key]?.();
-      if (candidate) return candidate;
+      if (candidate) {
+        candidates.push(candidate);
+        if (!collectSecondary || candidates.length >= 3) break;
+      }
     }
-    return { priority: "default", weather, todayHighText, events: standardEvents };
+    const model = candidates[0] ?? { priority: "default", weather, todayHighText, events: standardEvents };
+    model.secondaryCards = candidates.slice(1);
+    return model;
   }
 
   const model = await pickPriority();
@@ -3062,7 +3079,10 @@ async function createWidget(settings, family = "small") {
       return await renderWindDownWidget(settings, family, weather);
     }
 
-    const model = await buildWidgetModel(settings, weather);
+    // Secondary-card chips only exist on medium/large, so small skips the
+    // extra candidate evaluation entirely.
+    const collectSecondary = settings.behavior.multiCardEnabled && family !== "small";
+    const model = await buildWidgetModel(settings, weather, collectSecondary);
     return renderWidget(model, settings, family);
   } catch (e) {
     console.error(`Widget failed to build: ${e}`);
@@ -3758,6 +3778,7 @@ function renderWidget(model, settings, family) {
 
   addPrimaryRows(widget, model, settings, family, hasBackgroundImage);
   addOptionalThirdLine(widget, model, settings, family, hasBackgroundImage);
+  addSecondaryCardChips(widget, model, settings, family, hasBackgroundImage);
 
   // Large has the room, so the agenda shows under every state when
   // enabled — not just the event-focused ones. Severe weather is the one
@@ -3770,6 +3791,42 @@ function renderWidget(model, settings, family) {
 
   widget.refreshAfterDate = computeRefreshDate(model, settings);
   return widget;
+}
+
+// The runner-up chip row — the other states that also apply right now,
+// compressed to icon + short title beneath the primary card, the way the
+// real At a Glance pairs its main card with small secondary chips. Reuses
+// accessoryLines for each card's summary (the same compression the Lock
+// Screen already uses) and addMixedRow's pill machinery, so chips follow
+// the Pill Style setting (filled/outlined/plain text) and each one is its
+// own tap target deep-linking to its state's app on medium/large.
+function addSecondaryCardChips(widget, model, settings, family, hasBackgroundImage) {
+  if (family === "small" || !settings.behavior.multiCardEnabled) return;
+  const cards = model.secondaryCards ?? [];
+  if (cards.length === 0) return;
+
+  const chipStyle = withColor(
+    scaledStyle(secondaryStyle(family), 0.8),
+    resolvedSecondaryColor(settings, hasBackgroundImage),
+    resolvedTextShadow(settings, hasBackgroundImage),
+    resolvedPillTextColor(settings, hasBackgroundImage),
+    resolvedPillTextShadow(settings, hasBackgroundImage)
+  );
+
+  const segments = cards.map((card) => {
+    const lines = accessoryLines(card, settings);
+    return {
+      pill: lines.title,
+      // The muted frame gray, not each state's vivid accent — chips are
+      // deliberately quieter than the primary card's own pills.
+      color: PILL_COLORS.frame,
+      icon: lines.glyph && SFSymbol.named(lines.glyph) ? { glyph: lines.glyph } : null,
+      url: resolveWidgetURL(settings, card),
+    };
+  });
+
+  widget.addSpacer(8);
+  addMixedRow(widget, segments, chipStyle);
 }
 
 // MARK: - Settings Menu
@@ -4229,7 +4286,7 @@ const SETTINGS_SECTIONS = [
     fields: [
       {
         label: "🔢 Priority Order",
-        description: "The widget shows exactly one thing at a time — whichever state highest on this list currently applies. Reorder it to match what you care about (e.g. put Steps above Stocks). Individual on/off toggles elsewhere still apply; this only decides who wins among the ones that are on. Severe weather alerts always stay above everything and can't be demoted.",
+        description: "The main card shows whichever state highest on this list currently applies. Reorder it to match what you care about (e.g. put Steps above Stocks). Individual on/off toggles elsewhere still apply; this only decides who wins among the ones that are on. Severe weather alerts always stay above everything and can't be demoted.",
         get: (s) => (s.behavior.priorityOrder ? "Customized" : "Default"),
         apply: (s, value) => {
           // Storing null for "matches the default" keeps the row reading
@@ -4238,6 +4295,13 @@ const SETTINGS_SECTIONS = [
             JSON.stringify(value) === JSON.stringify(DEFAULT_PRIORITY_ORDER) ? null : value;
         },
         isPriorityOrderPicker: true,
+      },
+      {
+        label: "🃏 Secondary Cards",
+        description: "When on, medium and large widgets also show the next couple of states that currently apply as small tappable chips under the main card — the way Pixel's own At a Glance pairs its main card with secondary chips. They follow your Priority Order and Pill Style. Small widgets never have the room, so they always show just the main card.",
+        get: (s) => (s.behavior.multiCardEnabled ? "On" : "Off"),
+        apply: (s, value) => { s.behavior.multiCardEnabled = value === "On"; },
+        choices: ["On", "Off"],
       },
     ],
   },
