@@ -1220,7 +1220,24 @@ async function geocodeViaNominatim(text, cacheKey) {
 
   try {
     const structured = parseUSAddressParts(text);
-    const coords = (structured && (await requestNominatimCoords(structured))) || (await requestNominatimCoords({ q: text }));
+    let coords = structured ? await requestNominatimCoords(structured) : null;
+
+    // The USPS mailing city and OpenStreetMap's administrative city often
+    // disagree near metro edges (a "Yukon, OK" mailing address whose
+    // street OSM files under Oklahoma City, for example — confirmed
+    // against the live API), and a mismatched city field guarantees zero
+    // results. Retrying without the city lets the zip code carry the
+    // disambiguation instead; zips are nationally unique, so this can't
+    // wander off to another state.
+    if (!coords && structured) {
+      coords = await requestNominatimCoords({
+        street: structured.street,
+        postalcode: structured.postalcode,
+        country: structured.country,
+      });
+    }
+
+    if (!coords) coords = await requestNominatimCoords({ q: text });
     if (!coords) return null;
 
     setCacheEntry(cacheKey, { ...coordsByText, [text]: coords });
