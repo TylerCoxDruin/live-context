@@ -1156,7 +1156,9 @@ function haversineDistanceMeters(lat1, lon1, lat2, lon2) {
 // Uses Nominatim (OpenStreetMap) over HTTP — Scriptable has no forward-
 // geocoding API of its own (Location only offers current(), the accuracy
 // setters, and reverseGeocode(), which goes the opposite direction).
-const GEOCODE_CACHE_KEY = "geocodedAddresses";
+// Key is versioned: v2 abandons entries written while an unvalidated
+// retry rung could cache a same-named street from the wrong zip.
+const GEOCODE_CACHE_KEY = "geocodedAddressesV2";
 
 // Nominatim's usage policy (https://operations.osmfoundation.org/policies/nominatim/)
 // requires a descriptive User-Agent and forbids hammering it with repeat
@@ -1170,7 +1172,10 @@ const NOMINATIM_USER_AGENT = "LiveContext-Scriptable/1.0 (personal iOS widget sc
 // of structured fields (street/city/state/postalcode/country) — the two
 // are mutually exclusive per Nominatim's API, never combined in one call.
 async function requestNominatimCoords(params) {
-  const query = Object.entries({ ...params, format: "json", limit: "1" })
+  // addressdetails brings back the matched result's own postcode, which
+  // the zip-validated retry rung in geocodeViaNominatim needs to reject
+  // same-named streets from elsewhere in the metro.
+  const query = Object.entries({ ...params, format: "json", limit: "1", addressdetails: "1" })
     .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
     .join("&");
   const request = new Request(`https://nominatim.openstreetmap.org/search?${query}`);
@@ -1180,7 +1185,11 @@ async function requestNominatimCoords(params) {
   const results = await request.loadJSON();
   const first = results?.[0];
   if (!first) return null;
-  return { latitude: Number(first.lat), longitude: Number(first.lon) };
+  return {
+    latitude: Number(first.lat),
+    longitude: Number(first.lon),
+    postcode: first.address?.postcode ?? null,
+  };
 }
 
 // Best-effort split of a typical US "street, city, state zip" address into
@@ -1214,32 +1223,48 @@ function parseUSAddressParts(text) {
 async function geocodeViaNominatim(text, cacheKey) {
   if (!text) return null;
 
+  // Raw "lat, lon" passes straight through — the guaranteed escape hatch
+  // for addresses no geocoder resolves correctly (OSM gaps, new
+  // construction, USPS-vs-OSM city disputes). Long-press the spot in the
+  // Maps app and paste the numbers.
+  const coordMatch = text.match(/^(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)$/);
+  if (coordMatch) {
+    const latitude = Number(coordMatch[1]);
+    const longitude = Number(coordMatch[2]);
+    if (Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180) return { latitude, longitude };
+  }
+
   const cached = getCacheEntry(cacheKey, null); // null maxAge = never stale
   const coordsByText = cached?.data ?? {};
   if (coordsByText[text]) return coordsByText[text];
 
   try {
     const structured = parseUSAddressParts(text);
-    let coords = structured ? await requestNominatimCoords(structured) : null;
+    let result = structured ? await requestNominatimCoords(structured) : null;
 
     // The USPS mailing city and OpenStreetMap's administrative city often
-    // disagree near metro edges (a "Yukon, OK" mailing address whose
-    // street OSM files under Oklahoma City, for example — confirmed
-    // against the live API), and a mismatched city field guarantees zero
-    // results. Retrying without the city lets the zip code carry the
-    // disambiguation instead; zips are nationally unique, so this can't
-    // wander off to another state.
-    if (!coords && structured) {
-      coords = await requestNominatimCoords({
+    // disagree near metro edges, and a mismatched city field guarantees
+    // zero results — so retry without the city. But metro street grids
+    // repeat street names, and this rung once matched a same-named street
+    // 11km away in the neighboring city, so the result only counts if the
+    // zip it comes back with is the zip that was asked for. A miss here
+    // is better than a confident wrong pin — for those, the coordinate
+    // passthrough above is the reliable answer.
+    if (!result && structured) {
+      const cityless = await requestNominatimCoords({
         street: structured.street,
         postalcode: structured.postalcode,
         country: structured.country,
       });
+      if (cityless?.postcode && cityless.postcode.slice(0, 5) === structured.postalcode) {
+        result = cityless;
+      }
     }
 
-    if (!coords) coords = await requestNominatimCoords({ q: text });
-    if (!coords) return null;
+    if (!result) result = await requestNominatimCoords({ q: text });
+    if (!result) return null;
 
+    const coords = { latitude: result.latitude, longitude: result.longitude };
     setCacheEntry(cacheKey, { ...coordsByText, [text]: coords });
     return coords;
   } catch (e) {
@@ -1380,7 +1405,7 @@ async function checkGeofence(settings, currentLocation) {
 
 // MARK: - Event Arrival
 
-const NOMINATIM_CACHE_KEY = "nominatimGeocodedLocations";
+const NOMINATIM_CACHE_KEY = "nominatimGeocodedLocationsV2"; // versioned — see GEOCODE_CACHE_KEY
 const EVENT_ARRIVAL_RADIUS_METERS = 150;
 const EVENT_ARRIVAL_LEAD_MINUTES = 30; // how early the arrival window opens before the event's start
 
@@ -4146,7 +4171,7 @@ async function runDiagnostics() {
     const renders = stats?.cellRenders?.[cell] ?? 0;
     const scores = routineScoresForNow();
     if (!scores) {
-      lines.push(`🧠 Smart Priorities: still warming up for this time slot (${renders} of ${ROUTINE_MIN_OBSERVATIONS} observations) — using your configured order as-is.`);
+      lines.push(`🧠 Smart Priorities: collecting normally — ${renders} of ${ROUTINE_MIN_OBSERVATIONS} renders observed in this time slot. Reordering starts once this slot reaches ${ROUTINE_MIN_OBSERVATIONS}; each time slot warms up on its own. Until then your configured order applies as-is.`);
     } else {
       const ranked = [...LEARNABLE_PRIORITIES]
         .sort((a, b) => scores[b] - scores[a])
@@ -4991,7 +5016,7 @@ const SETTINGS_SECTIONS = [
       },
       {
         label: "🏠 Home Address",
-        description: "Street address to check for the Home geofence, e.g. \"123 Main St, Springfield\". Geocoded and cached on first use. Leave blank to skip.",
+        description: "Street address to check for the Home geofence, e.g. \"123 Main St, Springfield\". Geocoded and cached on first use. Leave blank to skip. If the address won't resolve (Diagnostics will say so, or the distance looks wrong), paste coordinates instead: long-press the spot in the Maps app and copy the two numbers, e.g. \"35.4676, -97.5164\".",
         get: (s) => s.location.homeAddress,
         apply: (s, value) => { s.location.homeAddress = value; },
         allowBlank: true,
@@ -4999,7 +5024,7 @@ const SETTINGS_SECTIONS = [
       },
       {
         label: "🏢 Work Address",
-        description: "Street address to check for the Work geofence, and the destination for the Morning Commute estimate below. Leave blank to skip.",
+        description: "Street address to check for the Work geofence, and the destination for the Morning Commute estimate below. Leave blank to skip. If the address won't resolve (Diagnostics will say so, or the distance looks wrong), paste coordinates instead: long-press the spot in the Maps app and copy the two numbers, e.g. \"35.4676, -97.5164\".",
         get: (s) => s.location.workAddress,
         apply: (s, value) => { s.location.workAddress = value; },
         allowBlank: true,
@@ -5014,7 +5039,7 @@ const SETTINGS_SECTIONS = [
       },
       {
         label: "🏋️ Gym Address",
-        description: "Street address to check for the Gym geofence. Leave blank to skip.",
+        description: "Street address to check for the Gym geofence. Leave blank to skip. If the address won't resolve (Diagnostics will say so, or the distance looks wrong), paste coordinates instead: long-press the spot in the Maps app and copy the two numbers, e.g. \"35.4676, -97.5164\".",
         get: (s) => s.location.gymAddress,
         apply: (s, value) => { s.location.gymAddress = value; },
         allowBlank: true,
