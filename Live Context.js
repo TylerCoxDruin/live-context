@@ -121,10 +121,11 @@ const DEFAULT_SETTINGS = {
     // the classic solid-color pill. The other two exist because some Home
     // Screen icon styles (iOS 26's "Clear," confirmed by direct testing)
     // strip the color out of a pill's background fill entirely, turning
-    // every filled badge blank: "text" (plain text, confirmed to survive
-    // Clear) and "outlined" (a colored border with matching text, no fill
-    // for Clear to strip). Replaces the older plainTextPillsEnabled
-    // boolean, which sanitizeSettings still migrates.
+    // every filled badge blank. Both alternatives are confirmed to survive
+    // Clear: "outlined" (a colored border with matching text, no fill to
+    // strip — the recommended choice there, since it keeps the badge look)
+    // and "text" (plain text, no badges at all). Replaces the older
+    // plainTextPillsEnabled boolean, which sanitizeSettings still migrates.
     pillStyle: "filled",
     // Optional darkening baked into the background image for legibility on
     // very bright wallpapers — "off" | "subtle" | "standard". Off by
@@ -4109,7 +4110,7 @@ const SETTINGS_SECTIONS = [
       },
       {
         label: "💊 Pill Style",
-        description: "How data badges (the date, temperature, battery, etc.) render. Filled is the classic solid-color pill. Some Home Screen icon styles (confirmed with iOS 26's \"Clear\" style) strip the color out of filled pills entirely, turning them into blank shapes even without a background image set — Plain Text is confirmed to survive that, and Outlined (a colored border with matching text, no fill to strip) keeps more of the badge look and is worth trying first.",
+        description: "How data badges (the date, temperature, battery, etc.) render. Filled is the classic solid-color pill. Some Home Screen icon styles (confirmed with iOS 26's \"Clear\" style) strip the color out of filled pills entirely, turning them into blank shapes even without a background image set — switch to Outlined there: a colored border with matching text and no fill to strip, confirmed to survive Clear mode while keeping most of the badge look. Plain Text also survives, if you prefer no badges at all.",
         get: (s) => {
           const labels = { filled: "Filled", outlined: "Outlined", text: "Plain Text" };
           return labels[s.behavior.pillStyle] ?? "Filled";

@@ -233,11 +233,12 @@ One important caveat: if your Home Screen icon style is set to **Clear**
 (iOS 26 and up), skip this tool entirely. iOS already makes widgets
 see-through in that mode, and stacking a custom background under it washes
 things out instead of helping. Clear mode also strips the color out of
-filled pill badges no matter what color settings you pick (confirmed by
-direct testing), so if your dates and temperatures are showing up as blank
-capsules, change **Appearance > Pill Style**. Plain Text is confirmed to
-survive Clear mode; Outlined keeps more of the badge look by drawing a
-colored border with no fill for Clear to strip, and is worth trying first.
+filled pill badges no matter what color settings you pick, so if your
+dates and temperatures are showing up as blank capsules, set
+**Appearance > Pill Style** to **Outlined**. It draws each badge as a
+colored border with no fill for Clear to strip, keeps most of the badge
+look, and is confirmed to survive Clear mode (as is Plain Text, if you
+prefer no badges at all).
 
 ## Lock Screen Widgets
 
