@@ -57,7 +57,7 @@ const DEFAULT_SETTINGS = {
     aqiAlertEnabled: true, // heads-up when air quality is unhealthy (US AQI scale)
     aqiAlertThreshold: 101, // US AQI at or above which the alert shows (101 = unhealthy for sensitive groups)
     // Weekday-morning commute estimate to the Work address in Places —
-    // same straight-line-distance approximation (and same caveat) as
+    // same route-based estimate (with straight-line fallback) as
     // travelEstimateEnabled below, so also off by default.
     commuteEstimateEnabled: false,
     // Data fed in from iOS/iPadOS Shortcuts automations, via the separate
@@ -97,8 +97,8 @@ const DEFAULT_SETTINGS = {
     holidayAlertEnabled: true, // whether a recognized US holiday gets its own greeting
     contactBirthdaysEnabled: true, // whether a birthday on the auto-generated Contacts "Birthdays" calendar takes over the widget
     reminderAlertEnabled: false, // off by default — routine daily reminders would otherwise hijack the widget constantly
-    // A rough "time to leave" for the featured event: straight-line
-    // distance to its location divided by this assumed average speed. Not
+    // Fallback speed for travel estimates when the road-route lookup
+    // fails: straight-line distance divided by this average speed. Not
     // real traffic/routing data — that needs a paid directions API — so
     // it's an approximation, off by default so nobody mistakes it for one.
     travelEstimateEnabled: false,
@@ -1401,26 +1401,70 @@ async function checkEventArrival(candidateEvents, currentLocation) {
 
 // MARK: - Travel Estimate
 
-// A rough, no-API-cost "time to leave" using straight-line distance and an
-// assumed average speed — not real traffic/routing data (that needs a paid
-// directions API), so it's framed as an approximation everywhere it's
-// shown. Reuses the same Nominatim geocoding already relied on for event
-// arrival detection above.
+// Real driving routes from OSRM's public server — free, keyless, verified
+// live (response: { code: "Ok", routes: [{ duration: seconds, distance:
+// meters }] }). No live traffic on the public server, but an actual road
+// route beats straight-line distance by a wide margin. Results are cached
+// briefly, keyed by coordinates rounded to ~110m, so a stationary device
+// re-renders from cache instead of re-asking for the same route — the
+// public server is a shared courtesy resource, not something to hammer.
+const OSRM_ROUTE_CACHE_KEY = "osrmRoutes";
+const OSRM_ROUTE_CACHE_MINUTES = 15;
+const OSRM_REQUEST_TIMEOUT_SECONDS = 5;
+
+async function fetchDrivingRoute(fromCoords, toCoords) {
+  const round = (value) => Math.round(Number(value) * 1000) / 1000;
+  const routeKey = `${round(fromCoords.latitude)},${round(fromCoords.longitude)}>${round(toCoords.latitude)},${round(toCoords.longitude)}`;
+
+  const cached = getCacheEntry(OSRM_ROUTE_CACHE_KEY, OSRM_ROUTE_CACHE_MINUTES);
+  if (cached && !cached.stale && cached.data[routeKey]) return cached.data[routeKey];
+
+  try {
+    const url = `https://router.project-osrm.org/route/v1/driving/${round(fromCoords.longitude)},${round(fromCoords.latitude)};${round(toCoords.longitude)},${round(toCoords.latitude)}?overview=false`;
+    const request = new Request(url);
+    request.timeoutInterval = OSRM_REQUEST_TIMEOUT_SECONDS;
+    const json = await request.loadJSON();
+    const route = json?.code === "Ok" ? json.routes?.[0] : null;
+    if (!route || !Number.isFinite(route.duration) || !Number.isFinite(route.distance)) return null;
+
+    const result = {
+      distanceMeters: route.distance,
+      minutes: Math.max(Math.round(route.duration / 60), 1),
+    };
+    // Routes for other from/to pairs in the window are kept — one shared
+    // entry, merged rather than replaced, since a render can need both the
+    // commute route and an event route.
+    const routes = cached && !cached.stale ? cached.data : {};
+    setCacheEntry(OSRM_ROUTE_CACHE_KEY, { ...routes, [routeKey]: result });
+    return result;
+  } catch (e) {
+    console.warn(`Couldn't fetch driving route (${e.message}); falling back to straight-line estimate.`);
+    return null;
+  }
+}
+
+// Straight-line distance ÷ assumed speed — the fallback when the routing
+// request fails or times out, and the pre-check for gates that shouldn't
+// cost a network call (the commute's "already at work"/">100km" checks).
+function straightLineEstimate(fromCoords, toCoords, settings) {
+  const distanceMeters = haversineDistanceMeters(
+    fromCoords.latitude,
+    fromCoords.longitude,
+    toCoords.latitude,
+    toCoords.longitude
+  );
+  const metersPerMinute = (settings.behavior.assumedTravelSpeedMph * 1609.34) / 60;
+  return { distanceMeters, minutes: Math.round(distanceMeters / metersPerMinute) };
+}
+
 async function computeTravelEstimate(event, currentLocation, settings) {
   if (!currentLocation || !event?.location) return null;
 
   const coords = await geocodeEventLocation(event.location);
   if (!coords) return null;
 
-  const distanceMeters = haversineDistanceMeters(
-    currentLocation.latitude,
-    currentLocation.longitude,
-    coords.latitude,
-    coords.longitude
-  );
-  const metersPerMinute = (settings.behavior.assumedTravelSpeedMph * 1609.34) / 60;
-  const minutes = Math.round(distanceMeters / metersPerMinute);
-  return { distanceMeters, minutes };
+  const route = await fetchDrivingRoute(currentLocation, coords);
+  return route ?? straightLineEstimate(currentLocation, coords, settings);
 }
 
 function formatTravelEstimate(travelEstimate) {
@@ -1484,17 +1528,21 @@ async function checkMorningCommute(settings, currentLocation, isWorkDay) {
   const coords = await geocodeAddress(address);
   if (!coords) return null;
 
-  const distanceMeters = haversineDistanceMeters(
+  // The "already at work" and "implausibly far" gates stay on the cheap
+  // straight-line distance — no point spending a routing request deciding
+  // whether to skip showing anything.
+  const straightLineMeters = haversineDistanceMeters(
     currentLocation.latitude,
     currentLocation.longitude,
     coords.latitude,
     coords.longitude
   );
-  if (distanceMeters <= settings.location.radiusMeters) return null;
-  if (distanceMeters > COMMUTE_MAX_DISTANCE_METERS) return null;
+  if (straightLineMeters <= settings.location.radiusMeters) return null;
+  if (straightLineMeters > COMMUTE_MAX_DISTANCE_METERS) return null;
 
-  const metersPerMinute = (settings.behavior.assumedTravelSpeedMph * 1609.34) / 60;
-  return { minutes: Math.max(Math.round(distanceMeters / metersPerMinute), 1), distanceMeters, coords };
+  const route = await fetchDrivingRoute(currentLocation, coords);
+  const estimate = route ?? straightLineEstimate(currentLocation, coords, settings);
+  return { minutes: Math.max(estimate.minutes, 1), distanceMeters: estimate.distanceMeters, coords };
 }
 
 // MARK: - Shortcuts Bridge
@@ -4516,14 +4564,14 @@ const SETTINGS_SECTIONS = [
       },
       {
         label: "🚗 Time-to-Leave Estimate",
-        description: "When on, your featured event shows a rough \"~N min away\" alongside its countdown, based on straight-line distance and the assumed speed below. Not real traffic or routing data — just a quick approximation.",
+        description: "When on, your featured event shows \"~N min away\" alongside its countdown, using a real driving route (via the free OSRM routing service). No live traffic data, and if the route lookup fails it falls back to straight-line distance at the assumed speed below.",
         get: (s) => (s.behavior.travelEstimateEnabled ? "On" : "Off"),
         apply: (s, value) => { s.behavior.travelEstimateEnabled = value === "On"; },
         choices: ["On", "Off"],
       },
       {
         label: "🏎️ Assumed Travel Speed",
-        description: "Average speed used for the Time-to-Leave estimate above — lower it for city/walking-heavy days, raise it for highway commutes.",
+        description: "Fallback speed for when the road-route lookup fails and travel times revert to straight-line distance — lower it for city/walking-heavy days, raise it for highway commutes.",
         get: (s) => String(s.behavior.assumedTravelSpeedMph),
         apply: (s, value) => {
           const mph = Number(value);
@@ -4724,7 +4772,7 @@ const SETTINGS_SECTIONS = [
       },
       {
         label: "🚗 Morning Commute",
-        description: "When on, weekday mornings show a rough travel time to your Work address — straight-line distance at the assumed speed from Calendar & Events, not live traffic. Skips itself once you're at work.",
+        description: "When on, weekday mornings show the driving time to your Work address using a real road route (via the free OSRM routing service; straight-line fallback if it's unreachable). No live traffic data. Skips itself once you're at work.",
         get: (s) => (s.behavior.commuteEstimateEnabled ? "On" : "Off"),
         apply: (s, value) => { s.behavior.commuteEstimateEnabled = value === "On"; },
         choices: ["On", "Off"],
