@@ -120,6 +120,10 @@ const DEFAULT_SETTINGS = {
     // file, which is also why this can't reference it directly here).
     // Edited via Settings > Priorities, not typed by hand.
     priorityOrder: null,
+    // Set per-widget via the parameter ({"pin": "steps"}), never stored —
+    // pins that one widget to a single state, cascade fallback when the
+    // state has no data.
+    pinnedState: null,
     // Medium/large widgets show the next couple of applicable states as
     // small chips under the primary card — the actual At a Glance
     // structure (one main card plus quiet secondary chips) rather than
@@ -224,7 +228,18 @@ function parseWidgetParameter(rawParameter) {
 
   try {
     const parsed = JSON.parse(rawParameter);
-    if (typeof parsed === "object" && parsed !== null) return parsed;
+    if (typeof parsed === "object" && parsed !== null) {
+      // {"pin": "steps"} locks this one widget to a single state (with
+      // cascade fallback when it has no data) — the Lock Screen
+      // complication pattern: three circles pinned to steps, weather,
+      // battery. Extracted here so it can sit alongside normal setting
+      // overrides in the same parameter.
+      const { pin, ...rest } = parsed;
+      if (pin != null) {
+        rest.behavior = { ...(rest.behavior ?? {}), pinnedState: String(pin) };
+      }
+      return rest;
+    }
   } catch {
     // Not JSON — fall through to the city ID shorthand below.
   }
@@ -275,6 +290,9 @@ function sanitizeSettings(s) {
   s.behavior.assumedTravelSpeedMph = orNum(s.behavior.assumedTravelSpeedMph, d.behavior.assumedTravelSpeedMph);
   if (!["left", "center", "right"].includes(s.behavior.textAlignment)) {
     s.behavior.textAlignment = d.behavior.textAlignment;
+  }
+  if (s.behavior.pinnedState != null && !DEFAULT_PRIORITY_ORDER.includes(s.behavior.pinnedState)) {
+    s.behavior.pinnedState = null;
   }
   // normalizePriorityOrder tolerates junk entries inside a valid array,
   // but a non-array value (bad hand-typed parameter JSON) is reset here
@@ -2259,6 +2277,18 @@ async function buildWidgetModel(settings, weather, collectSecondary = false) {
   // at two runners-up so evaluating them stays cheap; the default greeting
   // is a fallback, never a chip.
   async function pickPriority() {
+    // A pinned widget shows its one state whenever that state has data —
+    // no chips, no competition. When it doesn't (no steps yet today, say),
+    // the normal cascade takes over rather than showing an empty card.
+    const pinned = settings.behavior.pinnedState;
+    if (pinned && priorityCandidates[pinned]) {
+      const candidate = await priorityCandidates[pinned]();
+      if (candidate) {
+        candidate.secondaryCards = [];
+        return candidate;
+      }
+    }
+
     const candidates = [];
     const order = applySmartPriorities(normalizePriorityOrder(settings.behavior.priorityOrder), settings, placeKey);
     for (const key of order) {
@@ -3378,7 +3408,7 @@ async function createWidget(settings, family = "small") {
     if (String(family).startsWith("accessory")) {
       if (isWindDownTime(settings, weather)) {
         const widget = renderAccessoryWidget(
-          { glyph: "moon.zzz.fill", title: "Wind Down", subtitle: settings.behavior.windDownMessage },
+          { glyph: "moon.zzz.fill", title: "Wind Down", subtitle: settings.behavior.windDownMessage, compact: { glyph: "moon.zzz.fill", value: "Zzz" } },
           family
         );
         widget.refreshAfterDate = computeWindDownRefreshDate();
@@ -3410,80 +3440,120 @@ async function createWidget(settings, family = "small") {
 // Boils the full model down to two short plain-text lines. Reuses the
 // same formatters as the Home Screen rendering so numbers/times read
 // identically in both places — only the layout is simpler.
+// "8.4k" instead of "8,432" — a Lock Screen circle has room for about
+// four characters before scaling turns them to fuzz.
+function compactNumber(value) {
+  if (value >= 10000) return `${Math.round(value / 1000)}k`;
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
+  return String(Math.round(value));
+}
+
+// Each state's Lock Screen forms: `title`/`subtitle` for rectangular and
+// inline, plus `compact` — one glyph and one short value — for the
+// complication-style circular. The rule for compact values: a number the
+// glyph can disambiguate beats a word, and nothing over ~5 characters.
 function accessoryLines(model, settings) {
   const weather = model.weather;
   const temp = weather ? formatTemperature(weather, settings) : null;
+  const compactTemp = weather ? `${Math.round(weather.main.temp)}°` : null;
 
   switch (model.priority) {
     case "severe-weather":
-      return { glyph: "exclamationmark.triangle.fill", title: model.alert.event ?? "Severe Weather", subtitle: formatAlertUntil(model.alert, settings) };
+      return { glyph: "exclamationmark.triangle.fill", title: model.alert.event ?? "Severe Weather", subtitle: formatAlertUntil(model.alert, settings), compact: { glyph: "exclamationmark.triangle.fill", value: "Alert" } };
     case "high-value-event":
-    case "event":
-      return { glyph: model.priority === "high-value-event" ? "star.circle.fill" : "calendar", title: model.event.title, subtitle: `In ${formatCountdownValue(model.event.startDate)}` };
+    case "event": {
+      const glyph = model.priority === "high-value-event" ? "star.circle.fill" : "calendar";
+      return { glyph, title: model.event.title, subtitle: `In ${formatCountdownValue(model.event.startDate)}`, compact: { glyph, value: formatCountdownValue(model.event.startDate).replace(/\s+/g, "") } };
+    }
     case "event-arrival":
-      return { glyph: "figure.walk", title: `Welcome to ${model.event.title}!`, subtitle: model.event.location };
+      return { glyph: "figure.walk", title: `Welcome to ${model.event.title}!`, subtitle: model.event.location, compact: { glyph: "figure.walk", value: "Here" } };
     case "rain-incoming":
-      return { glyph: "cloud.rain.fill", title: `Rain in ${model.minutesUntilRain}m`, subtitle: temp };
-    case "custom-message":
-      return { glyph: model.message.glyph && SFSymbol.named(model.message.glyph) ? model.message.glyph : "bell.badge.fill", title: model.message.title, subtitle: model.message.subtitle };
+      return { glyph: "cloud.rain.fill", title: `Rain in ${model.minutesUntilRain}m`, subtitle: temp, compact: { glyph: "cloud.rain.fill", value: `${model.minutesUntilRain}m` } };
+    case "custom-message": {
+      const glyph = model.message.glyph && SFSymbol.named(model.message.glyph) ? model.message.glyph : "bell.badge.fill";
+      return { glyph, title: model.message.title, subtitle: model.message.subtitle, compact: { glyph, value: "New" } };
+    }
     case "commute":
-      return { glyph: "car.fill", title: `Commute ~${model.commute.minutes} min`, subtitle: formatDistance(model.commute.distanceMeters, settings) };
+      return { glyph: "car.fill", title: `Commute ~${model.commute.minutes} min`, subtitle: formatDistance(model.commute.distanceMeters, settings), compact: { glyph: "car.fill", value: `${model.commute.minutes}m` } };
     case "geofence":
-      return { glyph: "mappin.circle.fill", title: `At ${model.geofence.label}`, subtitle: `Since ${formatClockTime(new Date(model.geofence.arrivedAt), settings)}` };
+      return { glyph: "mappin.circle.fill", title: `At ${model.geofence.label}`, subtitle: `Since ${formatClockTime(new Date(model.geofence.arrivedAt), settings)}`, compact: { glyph: "mappin.circle.fill", value: model.geofence.label.replace(/^the /, "") } };
     case "battery":
-      return { glyph: batterySymbolName(model.battery.level), title: `Battery ${Math.round(model.battery.level * 100)}%`, subtitle: "Charge soon" };
+      return { glyph: batterySymbolName(model.battery.level), title: `Battery ${Math.round(model.battery.level * 100)}%`, subtitle: "Charge soon", compact: { glyph: batterySymbolName(model.battery.level), value: `${Math.round(model.battery.level * 100)}%` } };
     case "weather":
-      return { glyph: weatherSymbolName(model.weather), title: describeWeather(model.weather), subtitle: temp };
+      return { glyph: weatherSymbolName(model.weather), title: describeWeather(model.weather), subtitle: temp, compact: { glyph: weatherSymbolName(model.weather), value: compactTemp } };
     case "air-quality":
-      return { glyph: "aqi.medium", title: `AQI ${model.aqi}`, subtitle: "Poor air quality" };
+      return { glyph: "aqi.medium", title: `AQI ${model.aqi}`, subtitle: "Poor air quality", compact: { glyph: "aqi.medium", value: String(model.aqi) } };
     case "uv":
-      return { glyph: "sun.max.fill", title: `UV ${model.uvIndex}`, subtitle: "Wear sunscreen" };
+      return { glyph: "sun.max.fill", title: `UV ${model.uvIndex}`, subtitle: "Wear sunscreen", compact: { glyph: "sun.max.fill", value: `UV${model.uvIndex}` } };
     case "holiday":
-      return { glyph: "sparkles", title: `Happy ${model.holiday}!`, subtitle: temp };
+      return { glyph: "sparkles", title: `Happy ${model.holiday}!`, subtitle: temp, compact: { glyph: "sparkles", value: "Today" } };
     case "birthdays":
       return {
         glyph: "gift.fill",
         title: model.contactBirthdays.length === 1 ? "Birthday Today" : `${model.contactBirthdays.length} Birthdays Today`,
         subtitle: model.contactBirthdays.join(", "),
+        compact: { glyph: "gift.fill", value: String(model.contactBirthdays.length) },
       };
     case "reminders":
       return {
         glyph: "checkmark.circle.fill",
         title: model.dueReminders.length === 1 ? "1 Reminder Due" : `${model.dueReminders.length} Reminders Due`,
         subtitle: model.dueReminders[0].title,
+        compact: { glyph: "checkmark.circle.fill", value: String(model.dueReminders.length) },
       };
     case "steps": {
       const streak = statStreakDays("steps");
-      return { glyph: "figure.walk.circle.fill", title: `${model.steps.toLocaleString()} steps`, subtitle: streak >= 2 ? `${streak}-day streak` : "Today" };
+      return { glyph: "figure.walk.circle.fill", title: `${model.steps.toLocaleString()} steps`, subtitle: streak >= 2 ? `${streak}-day streak` : "Today", compact: { glyph: "figure.walk.circle.fill", value: compactNumber(model.steps) } };
     }
     case "sleep": {
       const hours = Math.floor(model.hours);
       const minutes = Math.round((model.hours - hours) * 60);
-      return { glyph: "bed.double.fill", title: minutes > 0 ? `${hours}h ${minutes}m sleep` : `${hours}h sleep`, subtitle: "Last night" };
+      return { glyph: "bed.double.fill", title: minutes > 0 ? `${hours}h ${minutes}m sleep` : `${hours}h sleep`, subtitle: "Last night", compact: { glyph: "bed.double.fill", value: minutes > 0 ? `${hours}h${minutes}` : `${hours}h` } };
     }
     case "activity": {
       const parts = [];
       if (model.activity.exerciseMinutes != null) parts.push(`${Math.round(model.activity.exerciseMinutes)}m exercise`);
       if (model.activity.activeCalories != null) parts.push(`${Math.round(model.activity.activeCalories)} cal`);
       if (model.activity.standHours != null) parts.push(`${Math.round(model.activity.standHours)}h stand`);
-      return { glyph: "figure.run.circle.fill", title: "Activity", subtitle: parts.join(" · ") };
+      const compactValue = model.activity.exerciseMinutes != null
+        ? `${Math.round(model.activity.exerciseMinutes)}m`
+        : model.activity.activeCalories != null
+        ? String(Math.round(model.activity.activeCalories))
+        : `${Math.round(model.activity.standHours)}h`;
+      return { glyph: "figure.run.circle.fill", title: "Activity", subtitle: parts.join(" · "), compact: { glyph: "figure.run.circle.fill", value: compactValue } };
     }
-    case "stocks":
-      return { glyph: "chart.line.uptrend.xyaxis", title: "Markets Closed", subtitle: model.stockQuotes.map((quote) => formatStockQuote(quote)).join("  ") };
+    case "stocks": {
+      const first = model.stockQuotes[0];
+      const changePct = ((first.price - first.previousClose) / first.previousClose) * 100;
+      const arrow = changePct > 0.005 ? "▲" : changePct < -0.005 ? "▼" : "–";
+      return { glyph: "chart.line.uptrend.xyaxis", title: "Markets Closed", subtitle: model.stockQuotes.map((quote) => formatStockQuote(quote)).join("  "), compact: { glyph: "chart.line.uptrend.xyaxis", value: `${arrow}${Math.abs(changePct).toFixed(1)}%` } };
+    }
     case "temp-swing":
       return {
         glyph: model.tempSwing.delta < 0 ? "thermometer.snowflake" : "thermometer.sun.fill",
         title: model.tempSwing.delta < 0 ? "Colder Tomorrow" : "Warmer Tomorrow",
         subtitle: `High ${Math.round(model.tempSwing.tomorrowHigh)}° (today ${Math.round(model.tempSwing.todayHigh)}°)`,
+        compact: { glyph: model.tempSwing.delta < 0 ? "thermometer.snowflake" : "thermometer.sun.fill", value: `${Math.round(model.tempSwing.tomorrowHigh)}°` },
       };
     case "now-playing":
-      return { glyph: "music.note", title: model.nowPlaying.title, subtitle: model.nowPlaying.artist };
-    default:
+      return { glyph: "music.note", title: model.nowPlaying.title, subtitle: model.nowPlaying.artist, compact: { glyph: "music.note", value: "♪" } };
+    default: {
+      // The Lock Screen already shows the time and date, and a greeting is
+      // decoration, not information — so the idle state leads with weather
+      // and spends its second line on the next event when there is one.
+      // The greeting only appears when there's literally nothing else.
+      const nextEvent = model.events?.[0] ?? null;
+      const title = weather ? `${temp} ${describeWeather(weather)}` : `${getGreeting()}, ${settings.user.name}`;
+      const subtitle = nextEvent
+        ? `${nextEvent.title} · in ${formatCountdownValue(nextEvent.startDate)}`
+        : weather ? formatShortOrdinalDate(settings) : null;
       return {
         glyph: weather ? weatherSymbolName(weather) : "sparkles",
-        title: `${getGreeting()}, ${settings.user.name}`,
-        subtitle: [settings.behavior.showDate ? formatShortOrdinalDate(settings) : null, temp].filter(Boolean).join(" · "),
+        title,
+        subtitle,
+        compact: { glyph: weather ? weatherSymbolName(weather) : "sparkles", value: compactTemp ?? String(new Date().getDate()) },
       };
+    }
   }
 }
 
@@ -3507,14 +3577,26 @@ function renderAccessoryWidget(lines, family) {
   }
 
   if (family === "accessoryCircular") {
-    // A tiny circle fits one short value; the title (scaled down as far
-    // as halved) is the most it can usefully show.
+    // Complication style: the state's glyph over one short bold value —
+    // "8.4k" under a walking figure, "84°" under a sun — instead of a
+    // sentence crushed into a circle.
     widget.addAccessoryWidgetBackground = true;
     widget.addSpacer();
-    const label = widget.addText(lines.title);
-    label.font = Font.semiboldSystemFont(13);
-    label.lineLimit = 2;
-    label.minimumScaleFactor = 0.5;
+    const compact = lines.compact ?? { glyph: lines.glyph, value: lines.title };
+    if (compact.glyph && SFSymbol.named(compact.glyph)) {
+      const symbol = SFSymbol.named(compact.glyph);
+      symbol.applyFont(Font.systemFont(13));
+      const glyphRow = widget.addStack();
+      glyphRow.addSpacer();
+      const image = glyphRow.addImage(symbol.image);
+      image.imageSize = new Size(14, 14);
+      glyphRow.addSpacer();
+      widget.addSpacer(1);
+    }
+    const label = widget.addText(compact.value);
+    label.font = Font.boldSystemFont(15);
+    label.lineLimit = 1;
+    label.minimumScaleFactor = 0.4;
     label.centerAlignText();
     widget.addSpacer();
     return widget;

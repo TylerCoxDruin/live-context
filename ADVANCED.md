@@ -85,6 +85,8 @@ either:
 
 - a JSON object to override any setting for just that widget, like
   `{"weather":{"units":"imperial"}}`
+- `{"pin": "steps"}` to lock that one widget to a single state (see the
+  Lock Screen section for details; works on Home Screen widgets too)
 - a bare string or number, treated as a shorthand OpenWeatherMap city ID
 
 ## Setting Up Shortcuts
@@ -284,12 +286,35 @@ prefer no badges at all).
 ## Lock Screen Widgets
 
 Live Context works as a Lock Screen widget too (iOS 16 and up): add a
-Scriptable widget to your Lock Screen, point it at the script, and it
-shows a compact text version of whatever the Home Screen widget would be
-showing, same priorities, same data. iOS forces Lock Screen widgets into
-its own tiny monochrome style, so there are no pills or colors there by
-design. You can preview it from the main menu under **Preview Widget >
-Lock Screen**.
+Scriptable widget to your Lock Screen and point it at the script. Same
+priorities, same data, but each shape gets its own treatment:
+
+- **Rectangular** shows an icon, a bold headline, and a detail line. Its
+  idle state is deliberately different from the Home Screen's: the Lock
+  Screen already shows the time and date, so instead of a greeting it
+  leads with the weather and spends its second line on your next event.
+- **Circular** works like a proper complication: the state's icon over
+  one short value. "8.4k" under a walking figure, "84°" under a sun, a
+  countdown under a calendar.
+- **Inline** (the line above the clock) compresses everything to one
+  short phrase.
+
+iOS forces Lock Screen widgets into its own monochrome style, so there
+are no pills or colors there by design. Preview from the main menu under
+**Preview Widget > Lock Screen**.
+
+### Pinning a widget to one thing
+
+Any widget (Lock Screen or Home Screen) can be locked to a single state
+instead of following the priority cascade: long-press it, tap **Edit
+Widget**, and set the Parameter to `{"pin": "steps"}`. Three circular
+Lock Screen widgets pinned to `steps`, `weather`, and `battery` behave
+like a classic complication row. If the pinned state has no data right
+now (no steps yet today, say), the widget falls back to the normal
+cascade rather than sitting empty. Valid pin names are the ones in the
+Priority Order list: `steps`, `sleep`, `activity`, `stocks`,
+`now-playing`, `weather`, `battery`, `event`, `commute`, `uv`,
+`air-quality`, and so on.
 
 ## Diagnostics & Permissions
 
