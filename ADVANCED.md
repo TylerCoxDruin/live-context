@@ -66,7 +66,10 @@ reading those.
   Home" card is the opt-in), how long that card stays up when shown,
   Home/Work/Gym addresses, morning commute estimate.
 - **Shortcuts**: on/off plus a freshness window for every Shortcuts-fed
-  data type (the full Bridge guide is further down).
+  data type (the full Bridge guide is further down). Once steps or sleep
+  data has been flowing for a few days, those cards automatically gain
+  trends ("up vs your avg") and streaks ("5-day streak") from a local
+  rolling history; nothing to configure.
 
 One field worth calling out on its own: **Work Schedule Calendar**, under
 Calendar & Events. Point it at whatever calendar your actual work shifts
@@ -196,6 +199,29 @@ particular app.
   `subtitle` and `glyph` are both optional. `glyph` is an SF Symbol name,
   and if you get it wrong it just falls back to a default icon instead of
   breaking anything.
+
+### Focus Mode
+
+Lets the widget react to your Focus modes. Build two automations, same
+pattern as Arrive/Leave:
+
+- "When [Focus] turns on": Dictionary `{"type": "focus", "name": "Sleep"}`
+- "When [Focus] turns off": Dictionary `{"type": "focusOff"}`
+
+A Focus whose name looks sleep-related (Sleep, Bedtime, Wind Down) puts
+the widget into Wind Down mode no matter what the clock says. Turn it on
+under Settings > Shortcuts > Focus Awareness.
+
+### Next Alarm
+
+Shows your next alarm on the nightly Wind Down screen, which is exactly
+the thing worth double-checking from bed.
+
+- Get it with **Get Upcoming Alarms**, take the first alarm's date, and
+  run it through **Format Date** set to ISO 8601
+- Dictionary: `{"type": "alarm", "timeISO": <that formatted text>}`
+- An alarm whose time has passed is ignored automatically. Turn the
+  display on under Settings > Shortcuts > Next Alarm.
 
 ### Background Image
 

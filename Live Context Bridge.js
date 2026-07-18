@@ -300,6 +300,43 @@ function handleCustomMessage(input) {
   console.log(`Recorded custom message: ${title}`);
 }
 
+// { type: "focus", name: "Work" } / { type: "focusOff" }
+// Pair with Shortcuts' Focus automations ("When Work Focus turns on" ->
+// focus, "turns off" -> focusOff), mirroring the arrival/departure pair.
+// The widget uses the name as context — most notably, a focus whose name
+// looks sleep-related (Sleep, Bedtime, Wind Down) switches the widget
+// into Wind Down mode regardless of the clock.
+function handleFocus(input) {
+  const name = String(input.name ?? "").trim();
+  if (!name) {
+    throw new Error(`"name" must be a non-empty string — got "${input.name}"`);
+  }
+  writeCacheEntry("shortcutFocus", { name });
+  console.log(`Recorded focus: ${name}.`);
+}
+
+function handleFocusOff() {
+  const cache = readCacheFile();
+  delete cache.shortcutFocus;
+  writeCache(cache);
+  console.log("Cleared the focus flag.");
+}
+
+// { type: "alarm", timeISO: "2026-07-19T06:30:00-05:00" }
+// Pair with a Shortcut using "Get Upcoming Alarms": take the first
+// alarm's date, run it through "Format Date" with the ISO 8601 format,
+// and send that text. The widget shows it on the nightly Wind Down
+// screen; an alarm whose time has passed is ignored automatically, so
+// there's nothing to clear.
+function handleAlarm(input) {
+  const parsed = Date.parse(String(input.timeISO ?? ""));
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`"timeISO" must be an ISO 8601 date-time — in the Shortcut, run the alarm's date through a "Format Date" action set to ISO 8601. Got "${input.timeISO}"`);
+  }
+  writeCacheEntry("shortcutAlarm", { timeISO: new Date(parsed).toISOString() });
+  console.log(`Recorded next alarm: ${new Date(parsed).toLocaleString()}.`);
+}
+
 const HANDLERS = {
   arrival: handleArrival,
   departure: handleDeparture,
@@ -310,6 +347,9 @@ const HANDLERS = {
   nowPlaying: handleNowPlaying,
   message: handleCustomMessage,
   background: handleBackground,
+  focus: handleFocus,
+  focusOff: handleFocusOff,
+  alarm: handleAlarm,
 };
 
 async function run() {

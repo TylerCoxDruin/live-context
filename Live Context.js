@@ -79,6 +79,9 @@ const DEFAULT_SETTINGS = {
     shortcutNowPlayingFreshMinutes: 10,
     shortcutMessageEnabled: false, // generic freeform message from any Shortcut you build — see Live Context Bridge.js's "message" type
     shortcutMessageFreshMinutes: 60,
+    shortcutFocusEnabled: false, // current Focus mode fed in from Shortcuts Focus automations — a sleep-ish Focus forces Wind Down
+    shortcutFocusFreshMinutes: 480, // backstop only — the focusOff automation is what normally clears it
+    shortcutAlarmEnabled: false, // next alarm from Shortcuts, shown on the Wind Down screen; self-expires once the time passes
     // Tapping certain states can run a named Shortcut instead of opening
     // an app — e.g. a "Low Power Mode" shortcut when battery's low. Blank
     // means that state keeps its normal tap-to-open behavior.
@@ -302,6 +305,7 @@ function sanitizeSettings(s) {
   s.behavior.shortcutActivityFreshMinutes = orNum(s.behavior.shortcutActivityFreshMinutes, d.behavior.shortcutActivityFreshMinutes);
   s.behavior.shortcutNowPlayingFreshMinutes = orNum(s.behavior.shortcutNowPlayingFreshMinutes, d.behavior.shortcutNowPlayingFreshMinutes);
   s.behavior.shortcutMessageFreshMinutes = orNum(s.behavior.shortcutMessageFreshMinutes, d.behavior.shortcutMessageFreshMinutes);
+  s.behavior.shortcutFocusFreshMinutes = orNum(s.behavior.shortcutFocusFreshMinutes, d.behavior.shortcutFocusFreshMinutes);
   return s;
 }
 
@@ -1713,6 +1717,85 @@ function readShortcutCustomMessage(settings) {
   return cached && !cached.stale ? cached.data : null;
 }
 
+function readShortcutFocus(settings) {
+  if (!settings.behavior.shortcutFocusEnabled) return null;
+  const cached = getCacheEntry("shortcutFocus", settings.behavior.shortcutFocusFreshMinutes);
+  return cached && !cached.stale ? cached.data.name : null;
+}
+
+// Valid only while the alarm is actually upcoming (and within 24h, so an
+// alarm set days out doesn't masquerade as tonight's) — no freshness
+// setting needed, time itself expires it.
+function readShortcutAlarm(settings) {
+  if (!settings.behavior.shortcutAlarmEnabled) return null;
+  const cached = getCacheEntry("shortcutAlarm", null);
+  const time = cached ? new Date(cached.data.timeISO) : null;
+  if (!time || Number.isNaN(time.getTime())) return null;
+  const now = Date.now();
+  return time.getTime() > now && time.getTime() <= now + 24 * 3600000 ? time : null;
+}
+
+// MARK: - Stat History (streaks & trends)
+//
+// A rolling ~3 weeks of daily values for the Shortcuts-fed stats, so the
+// steps/sleep cards can say "up vs your average" and "5-day streak"
+// instead of a bare number with no reference point. Same local-cache-only
+// posture as everything else; records automatically whenever those states
+// have data — there's nothing to configure.
+const STAT_HISTORY_KEY = "statHistory";
+const STAT_HISTORY_KEEP_DAYS = 21;
+
+function statHistoryDayKey(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+// Overwrites today's value with the latest reading (a step count grows all
+// day; the last write of the day wins) and prunes beyond the keep window.
+// Skips the disk write when today's stored value is already current.
+function recordStatHistory(stat, value) {
+  const history = getCacheEntry(STAT_HISTORY_KEY)?.data ?? {};
+  const days = history[stat] ?? {};
+  const today = statHistoryDayKey();
+  if (days[today] === value) return;
+
+  days[today] = value;
+  const keys = Object.keys(days).sort();
+  while (keys.length > STAT_HISTORY_KEEP_DAYS) delete days[keys.shift()];
+  history[stat] = days;
+  setCacheEntry(STAT_HISTORY_KEY, history);
+}
+
+// Compares today's value against the average of the last 7 recorded days
+// (excluding today). Null until at least 3 prior days exist — a trend
+// against one data point is a coin flip in costume.
+function statTrend(stat, todayValue) {
+  const days = getCacheEntry(STAT_HISTORY_KEY)?.data?.[stat] ?? {};
+  const today = statHistoryDayKey();
+  const priorValues = Object.keys(days)
+    .filter((key) => key !== today)
+    .sort()
+    .slice(-7)
+    .map((key) => days[key])
+    .filter((value) => Number.isFinite(value));
+  if (priorValues.length < 3) return null;
+
+  const average = priorValues.reduce((sum, value) => sum + value, 0) / priorValues.length;
+  return { up: todayValue >= average, average };
+}
+
+// Consecutive calendar days ending today with a recorded value > 0.
+function statStreakDays(stat) {
+  const days = getCacheEntry(STAT_HISTORY_KEY)?.data?.[stat] ?? {};
+  let streak = 0;
+  const cursor = new Date();
+  while (streak <= STAT_HISTORY_KEEP_DAYS) {
+    if (!(days[statHistoryDayKey(cursor)] > 0)) break;
+    streak += 1;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return streak;
+}
+
 // MARK: - Widget Model
 
 // The order the priority cascade checks states in — first match wins.
@@ -2050,6 +2133,12 @@ async function buildWidgetModel(settings, weather, collectSecondary = false) {
   const shortcutSleep = readShortcutSleep(settings);
   const shortcutActivity = readShortcutActivity(settings);
   const shortcutNowPlaying = readShortcutNowPlaying(settings);
+
+  // Daily history for streaks/trends — records whenever the data exists,
+  // independent of Smart Priorities.
+  if (shortcutSteps != null) recordStatHistory("steps", shortcutSteps);
+  if (shortcutSleep != null) recordStatHistory("sleep", shortcutSleep);
+  if (shortcutActivity?.exerciseMinutes != null) recordStatHistory("exerciseMinutes", shortcutActivity.exerciseMinutes);
 
   // Smart Priorities observation — presence only, from locals already
   // computed above, so learning costs one cache write and nothing else.
@@ -2601,6 +2690,7 @@ function scaledStyle(style, factor) {
 // flat lookup.
 const ICON_LIBRARY = {
   windDownMoon: { glyph: "moon.zzz.fill", emoji: "😴" },
+  alarm: { glyph: "alarm.fill", emoji: "⏰" },
   reminder: { glyph: "bolt.fill", emoji: "🔌" },
   error: { glyph: "exclamationmark.triangle.fill", emoji: "⚠️" },
   retry: { glyph: "arrow.clockwise", emoji: "🔄" },
@@ -3009,6 +3099,12 @@ function addMixedRow(widget, segments, style, url) {
 function isWindDownTime(settings, weather) {
   if (!settings.behavior.windDownEnabled) return false;
 
+  // A Focus whose name looks sleep-related (fed in from a Shortcuts Focus
+  // automation) switches Wind Down on regardless of the clock — going to
+  // bed early IS winding down, whatever the schedule says.
+  const focusName = readShortcutFocus(settings);
+  if (focusName && /sleep|bed|wind.?down/i.test(focusName)) return true;
+
   const sunset = settings.behavior.windDownUseSunset ? getSunTimes(weather)?.sunset : null;
   const start = sunset ? sunset.getHours() : settings.behavior.windDownStartHour;
   const { windDownEndHour: end } = settings.behavior;
@@ -3242,6 +3338,14 @@ async function renderWindDownWidget(settings, family, weather) {
     widget.addSpacer(4);
     addIconTextRow(widget, icon(settings, "tomorrow"), tomorrowText, withColor(tertiaryStyle(family), MUTED, windDownShadow), tomorrowUrl);
   }
+
+  // Tonight's alarm, when a Shortcut has fed one in — exactly the thing
+  // worth double-checking from bed.
+  const alarmTime = readShortcutAlarm(settings);
+  if (alarmTime) {
+    widget.addSpacer(4);
+    addIconTextRow(widget, icon(settings, "alarm"), `Alarm · ${formatClockTime(alarmTime, settings)}`, withColor(tertiaryStyle(family), MUTED, windDownShadow));
+  }
   widget.addSpacer();
 
   widget.refreshAfterDate = computeWindDownRefreshDate();
@@ -3348,8 +3452,10 @@ function accessoryLines(model, settings) {
         title: model.dueReminders.length === 1 ? "1 Reminder Due" : `${model.dueReminders.length} Reminders Due`,
         subtitle: model.dueReminders[0].title,
       };
-    case "steps":
-      return { glyph: "figure.walk.circle.fill", title: `${model.steps.toLocaleString()} steps`, subtitle: "Today" };
+    case "steps": {
+      const streak = statStreakDays("steps");
+      return { glyph: "figure.walk.circle.fill", title: `${model.steps.toLocaleString()} steps`, subtitle: streak >= 2 ? `${streak}-day streak` : "Today" };
+    }
     case "sleep": {
       const hours = Math.floor(model.hours);
       const minutes = Math.round((model.hours - hours) * 60);
@@ -3632,11 +3738,19 @@ function addPrimaryRows(widget, model, settings, family, hasBackgroundImage) {
     // Fed in from a Shortcuts automation (see MARK: - Shortcuts Bridge) —
     // Scriptable has no Health app API of its own, so this data can only
     // ever exist if a Shortcut is actually feeding it in.
-    case "steps":
+    case "steps": {
       addIconTextRow(widget, icon(settings, "steps"), "Today's Steps", primary);
       widget.addSpacer(6);
-      addMixedRow(widget, [{ pill: model.steps.toLocaleString(), color: PILL_COLORS.distance }], secondary);
+      const segments = [{ pill: model.steps.toLocaleString(), color: PILL_COLORS.distance }];
+      const extras = [];
+      const trend = statTrend("steps", model.steps);
+      if (trend) extras.push(trend.up ? "↑ vs your avg" : "↓ vs your avg");
+      const streak = statStreakDays("steps");
+      if (streak >= 2) extras.push(`${streak}-day streak`);
+      if (extras.length > 0) segments.push(extras.join(" · "));
+      addMixedRow(widget, segments, secondary);
       break;
+    }
 
     // Also Shortcuts-fed — a single decimal hours figure from last night's
     // Health sleep data.
@@ -3646,7 +3760,10 @@ function addPrimaryRows(widget, model, settings, family, hasBackgroundImage) {
       const durationText = minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
       addIconTextRow(widget, icon(settings, "sleep"), "Last Night's Sleep", primary);
       widget.addSpacer(6);
-      addMixedRow(widget, [{ pill: durationText, color: PILL_COLORS.distance }], secondary);
+      const segments = [{ pill: durationText, color: PILL_COLORS.distance }];
+      const trend = statTrend("sleep", model.hours);
+      if (trend) segments.push(trend.up ? "↑ vs your avg" : "↓ vs your avg");
+      addMixedRow(widget, segments, secondary);
       break;
     }
 
@@ -4217,6 +4334,14 @@ async function runDiagnostics() {
   if (settings.behavior.shortcutMessageEnabled) {
     const message = readShortcutCustomMessage(settings);
     lines.push(message ? `🔗 Shortcuts custom message: "${message.title}".` : "🔗 Shortcuts custom message: no fresh message from a Shortcut yet.");
+  }
+  if (settings.behavior.shortcutFocusEnabled) {
+    const focusName = readShortcutFocus(settings);
+    lines.push(focusName ? `🔗 Shortcuts focus: ${focusName}${/sleep|bed|wind.?down/i.test(focusName) ? " (sleep-related — forcing Wind Down)" : ""}.` : "🔗 Shortcuts focus: none active (or the automation hasn't fired yet).");
+  }
+  if (settings.behavior.shortcutAlarmEnabled) {
+    const alarmTime = readShortcutAlarm(settings);
+    lines.push(alarmTime ? `🔗 Shortcuts alarm: next at ${formatClockTime(alarmTime, settings)}.` : "🔗 Shortcuts alarm: none upcoming within 24h (or no Shortcut has sent one).");
   }
 
   // Everything Smart Priorities has learned, in the open — the whole
@@ -5232,6 +5357,30 @@ const SETTINGS_SECTIONS = [
           if (Number.isFinite(minutes)) s.behavior.shortcutMessageFreshMinutes = Math.max(minutes, 1);
         },
         suffix: "min",
+      },
+      {
+        label: "🌙 Focus Awareness",
+        description: "When on, Shortcuts Focus automations can tell the widget which Focus is active (see Live Context Bridge.js's \"focus\" type). A Focus whose name looks sleep-related — Sleep, Bedtime, Wind Down — switches the widget into Wind Down mode regardless of the clock. Build both automations: Focus turns on sends the name, turns off clears it.",
+        get: (s) => (s.behavior.shortcutFocusEnabled ? "On" : "Off"),
+        apply: (s, value) => { s.behavior.shortcutFocusEnabled = value === "On"; },
+        choices: ["On", "Off"],
+      },
+      {
+        label: "⏱️ Focus Freshness",
+        description: "Backstop for a Focus flag whose \"turned off\" automation never fired — after this many minutes it's ignored as stale. The off-automation is what normally clears it.",
+        get: (s) => String(s.behavior.shortcutFocusFreshMinutes),
+        apply: (s, value) => {
+          const minutes = Number(value);
+          if (Number.isFinite(minutes)) s.behavior.shortcutFocusFreshMinutes = Math.max(minutes, 1);
+        },
+        suffix: "min",
+      },
+      {
+        label: "⏰ Next Alarm",
+        description: "When on, a Shortcut can feed in your next alarm (see Live Context Bridge.js's \"alarm\" type) and the Wind Down screen shows it — the thing worth double-checking from bed. An alarm whose time has passed is ignored automatically, so there's nothing to clean up.",
+        get: (s) => (s.behavior.shortcutAlarmEnabled ? "On" : "Off"),
+        apply: (s, value) => { s.behavior.shortcutAlarmEnabled = value === "On"; },
+        choices: ["On", "Off"],
       },
     ],
   },
