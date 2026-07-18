@@ -122,7 +122,7 @@ const DEFAULT_SETTINGS = {
     // Screen icon styles (iOS 26's "Clear," confirmed by direct testing)
     // strip the color out of a pill's background fill entirely, turning
     // every filled badge blank. Both alternatives are confirmed to survive
-    // Clear: "outlined" (a colored border with matching text, no fill to
+    // Clear: "outlined" (a colored border with white text, no fill to
     // strip — the recommended choice there, since it keeps the badge look)
     // and "text" (plain text, no badges at all). Replaces the older
     // plainTextPillsEnabled boolean, which sanitizeSettings still migrates.
@@ -2381,7 +2381,7 @@ let currentTextAlignment = "center";
 // Same reasoning and lifecycle as currentTextAlignment above — set once
 // per render, read by the pill primitives below rather than threaded
 // through every individual state's rendering case. "filled" is the classic
-// solid badge; "outlined" draws a colored border with matching text and no
+// solid badge; "outlined" draws a colored border around white text with no
 // fill; "text" drops the badge entirely. The latter two exist because some
 // Home Screen icon styles (iOS 26's "Clear," confirmed by direct testing)
 // strip the color out of a pill's background fill, turning every filled
@@ -2481,11 +2481,8 @@ function aqiPillColor(aqi) {
 // factored out so a standalone flat pill and a chip nested inside a frame
 // draw their content identically instead of one wrapping the other and
 // compounding two independent paddings into a lopsided result.
-// `contentColor` overrides the default white/black pill text — used by the
-// outlined style, where the text matches the border color instead of
-// sitting on a fill.
-function addPillContent(pillStack, text, style, iconDescriptor, contentColor) {
-  const pillTextColor = contentColor ?? style.pillTextColor ?? Color.white();
+function addPillContent(pillStack, text, style, iconDescriptor) {
+  const pillTextColor = style.pillTextColor ?? Color.white();
 
   const label = pillStack.addText(text);
   label.font = style.font;
@@ -2523,7 +2520,7 @@ function addPillContent(pillStack, text, style, iconDescriptor, contentColor) {
 // so setting it unconditionally is safe: it's simply ignored on small.
 function addPill(container, text, backgroundColor, style, iconDescriptor, url) {
   const pill = container.addStack();
-  // Outlined: a colored border with matching text, no fill — nothing for a
+  // Outlined: a colored border with white text, no fill — nothing for a
   // fill-stripping icon style (see currentPillStyle) to blank out.
   if (currentPillStyle === "outlined") {
     pill.borderWidth = 2;
@@ -2535,7 +2532,7 @@ function addPill(container, text, backgroundColor, style, iconDescriptor, url) {
   pill.setPadding(4, 10, 4, 10);
   pill.centerAlignContent();
   if (url) pill.url = url;
-  addPillContent(pill, text, style, iconDescriptor, currentPillStyle === "outlined" ? backgroundColor : null);
+  addPillContent(pill, text, style, iconDescriptor);
 }
 
 // A vivid chip inset in a thin, even gray frame (the temperature pill).
@@ -2574,8 +2571,9 @@ function addFramedPill(container, text, color, style, iconDescriptor, url) {
 // the outer frame so both the month chip and the day number are one
 // shared tap target.
 function addDateBadge(container, month, day, style, url) {
-  // Outlined: one capsule, month in the accent color, day in the row's own
-  // text color — the chip-in-frame layering needs fills to read at all.
+  // Outlined: one capsule with the accent-colored border, month and day in
+  // the same white pill text as every other style — the chip-in-frame
+  // layering needs fills to read at all.
   if (currentPillStyle === "outlined") {
     const outer = container.addStack();
     outer.borderWidth = 2;
@@ -2585,13 +2583,13 @@ function addDateBadge(container, month, day, style, url) {
     outer.centerAlignContent();
     if (url) outer.url = url;
 
-    addPillContent(outer, month, style, null, PILL_COLORS.dateMonth);
+    addPillContent(outer, month, style);
     outer.addSpacer(6);
     const dayLabel = outer.addText(day);
     dayLabel.font = style.font;
-    dayLabel.textColor = style.color;
+    dayLabel.textColor = style.pillTextColor ?? Color.white();
     dayLabel.lineLimit = 1;
-    if (style.shadow) applyTextShadow(dayLabel, style.shadow);
+    if (style.pillShadow) applyTextShadow(dayLabel, style.pillShadow);
     return;
   }
 
@@ -4110,7 +4108,7 @@ const SETTINGS_SECTIONS = [
       },
       {
         label: "💊 Pill Style",
-        description: "How data badges (the date, temperature, battery, etc.) render. Filled is the classic solid-color pill. Some Home Screen icon styles (confirmed with iOS 26's \"Clear\" style) strip the color out of filled pills entirely, turning them into blank shapes even without a background image set — switch to Outlined there: a colored border with matching text and no fill to strip, confirmed to survive Clear mode while keeping most of the badge look. Plain Text also survives, if you prefer no badges at all.",
+        description: "How data badges (the date, temperature, battery, etc.) render. Filled is the classic solid-color pill. Some Home Screen icon styles (confirmed with iOS 26's \"Clear\" style) strip the color out of filled pills entirely, turning them into blank shapes even without a background image set — switch to Outlined there: a colored border with white text and no fill to strip, confirmed to survive Clear mode while keeping most of the badge look. Plain Text also survives, if you prefer no badges at all.",
         get: (s) => {
           const labels = { filled: "Filled", outlined: "Outlined", text: "Plain Text" };
           return labels[s.behavior.pillStyle] ?? "Filled";
