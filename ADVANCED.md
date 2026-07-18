@@ -37,9 +37,10 @@ reading those.
   on top and can't be demoted. There's also an opt-in **Smart
   Priorities** mode: the widget learns which of your personal stats
   (steps, sleep, activity, stocks, now playing) tend to have data at
-  which times of day, and sorts just those five among themselves to
-  match your routine. Nothing else ever moves, everything learned stays
-  in the widget's own local cache, Diagnostics shows exactly what it has
+  which times of day (and, when place detection has a fix, at which of
+  your places), and sorts just those five among themselves to match your
+  routine. Nothing else ever moves, everything learned stays in the
+  widget's own local cache, Diagnostics shows exactly what it has
   learned, and switching it off deletes the data.
 - **Weather**: API key, city ID, temperature units, cache limit, forecast
   data toggle, feels-like temps, morning high briefing.
@@ -59,9 +60,11 @@ reading those.
 - **Wind Down**: the nightly quiet mode. Hours (fixed or sunset-based),
   message, charge reminder, tomorrow preview, moon phase icon, and a
   Shortcut to run when tapped.
-- **Places**: geofence alert and radius, how long the "At Home/Work/Gym"
-  card stays up after you arrive, Home/Work/Gym addresses, morning
-  commute estimate.
+- **Places**: geofence alert and radius, the Place Card mode (by
+  default, being at Home/Work/Gym feeds the smart logic without ever
+  being announced, since you already know where you are; a visible "At
+  Home" card is the opt-in), how long that card stays up when shown,
+  Home/Work/Gym addresses, morning commute estimate.
 - **Shortcuts**: on/off plus a freshness window for every Shortcuts-fed
   data type (the full Bridge guide is further down).
 

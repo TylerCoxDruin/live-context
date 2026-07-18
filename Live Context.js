@@ -188,6 +188,10 @@ const DEFAULT_SETTINGS = {
     // whole visit — but sitting at work for eight hours doesn't need eight
     // hours of being told so.
     geofenceLingerMinutes: 45,
+    // "context" (default): place detection feeds the smart logic but never
+    // claims the widget — being told you're at home isn't information.
+    // "show": the old behavior, an "At Home/Work/Gym · since 9:02" card.
+    placeCardMode: "context",
     // Plain street addresses rather than lat/lon — geocoded on demand (and
     // cached, since geocoding needs the network) via Nominatim; see
     // geocodeAddress / geocodeViaNominatim.
@@ -260,6 +264,9 @@ function sanitizeSettings(s) {
   s.behavior.arrivalMessageLingerMinutes = orNum(s.behavior.arrivalMessageLingerMinutes, d.behavior.arrivalMessageLingerMinutes);
   s.location.radiusMeters = orNum(s.location.radiusMeters, d.location.radiusMeters);
   s.location.geofenceLingerMinutes = orNum(s.location.geofenceLingerMinutes, d.location.geofenceLingerMinutes);
+  if (!["context", "show"].includes(s.location.placeCardMode)) {
+    s.location.placeCardMode = d.location.placeCardMode;
+  }
   s.stocks.displayMinutes = orNum(s.stocks.displayMinutes, d.stocks.displayMinutes);
   if (!Array.isArray(s.stocks.tickers)) s.stocks.tickers = [];
   s.behavior.assumedTravelSpeedMph = orNum(s.behavior.assumedTravelSpeedMph, d.behavior.assumedTravelSpeedMph);
@@ -1790,11 +1797,15 @@ function normalizePriorityOrder(storedOrder) {
 // everything else never move, and the block as a whole never rises above
 // or sinks below where the user put it. What it learns is equally simple:
 // at each render it notes which of these states currently has data, keyed
-// by weekday-vs-weekend and 3-hour block. Over a few weeks that becomes
-// "sleep data usually exists on weekday mornings, steps in the evening,
-// stocks after close" — for THIS user's actual routine — and the state
-// most likely to be relevant right now sorts first within the block. All
-// of it lives in the local cache file; turning the setting off deletes it.
+// by weekday-vs-weekend and 3-hour block — and, when place detection has
+// a fix, by which configured place the device is at (home/work/gym/away).
+// Over a few weeks that becomes "sleep data usually exists on weekday
+// mornings, steps in the evening, now-playing at the gym" — for THIS
+// user's actual routine — and the state most likely to be relevant right
+// now sorts first within the block. Place-specific patterns win once
+// they have enough observations; until then the general time-of-day
+// pattern applies. All of it lives in the local cache file; turning the
+// setting off deletes it.
 const LEARNABLE_PRIORITIES = ["steps", "sleep", "activity", "stocks", "now-playing"];
 const ROUTINE_STATS_KEY = "routineStats";
 // Below this many observations of the current time cell, the configured
@@ -1813,26 +1824,40 @@ function routineCellKey(date = new Date()) {
   return `${dayType}-${Math.floor(date.getHours() / 3)}`;
 }
 
+// Compact place tag for cell keys, from the geofence label ("Home" ->
+// "home"). null means no place fix this render — those renders only feed
+// the general cells, never a wrong place cell.
+function routinePlaceKey(placeLabel) {
+  const map = { Home: "home", Work: "work", "the Gym": "gym" };
+  return placeLabel ? map[placeLabel] ?? null : null;
+}
+
 // Called once per render (only while the setting is on) with a map of
 // { stateKey: hasDataRightNow }. cellRenders counts every render in the
 // cell, per-state counts only the renders where that state had data — the
 // ratio is the "how often does this exist at this time of day" score.
-function recordRoutineObservation(presenceByState) {
+function recordRoutineObservation(presenceByState, placeKey) {
   const stats = getCacheEntry(ROUTINE_STATS_KEY)?.data ?? { cellRenders: {}, states: {} };
-  const cell = routineCellKey();
+  // Every render feeds the general time cell; renders with a place fix
+  // additionally feed that place's own cell, so a place-specific pattern
+  // can emerge without starving the general one.
+  const cells = [routineCellKey()];
+  if (placeKey) cells.push(`${placeKey}|${routineCellKey()}`);
 
-  stats.cellRenders[cell] = (stats.cellRenders[cell] ?? 0) + 1;
-  for (const [state, present] of Object.entries(presenceByState)) {
-    if (!present) continue;
-    stats.states[state] = stats.states[state] ?? {};
-    stats.states[state][cell] = (stats.states[state][cell] ?? 0) + 1;
-  }
+  for (const cell of cells) {
+    stats.cellRenders[cell] = (stats.cellRenders[cell] ?? 0) + 1;
+    for (const [state, present] of Object.entries(presenceByState)) {
+      if (!present) continue;
+      stats.states[state] = stats.states[state] ?? {};
+      stats.states[state][cell] = (stats.states[state][cell] ?? 0) + 1;
+    }
 
-  if (stats.cellRenders[cell] > ROUTINE_CELL_CAP) {
-    stats.cellRenders[cell] = Math.floor(stats.cellRenders[cell] / 2);
-    for (const state of Object.keys(stats.states)) {
-      if (stats.states[state][cell]) {
-        stats.states[state][cell] = Math.floor(stats.states[state][cell] / 2);
+    if (stats.cellRenders[cell] > ROUTINE_CELL_CAP) {
+      stats.cellRenders[cell] = Math.floor(stats.cellRenders[cell] / 2);
+      for (const state of Object.keys(stats.states)) {
+        if (stats.states[state][cell]) {
+          stats.states[state][cell] = Math.floor(stats.states[state][cell] / 2);
+        }
       }
     }
   }
@@ -1840,30 +1865,39 @@ function recordRoutineObservation(presenceByState) {
   setCacheEntry(ROUTINE_STATS_KEY, stats);
 }
 
-// Score per learnable state for the current cell: the fraction of renders
-// in this cell where the state had data (0 when never seen). Returns null
-// while the cell is still below the observation floor.
-function routineScoresForNow() {
+// Score per learnable state: the fraction of renders in the chosen cell
+// where the state had data (0 when never seen). The current place's own
+// cell wins when it has enough observations; otherwise the general
+// time-of-day cell; null while both are below the observation floor.
+// Returns { scores, cellLabel, renders } so Diagnostics can say exactly
+// which pattern is in effect.
+function routineScoresForNow(placeKey) {
   const stats = getCacheEntry(ROUTINE_STATS_KEY)?.data;
   if (!stats) return null;
-  const cell = routineCellKey();
-  const renders = stats.cellRenders?.[cell] ?? 0;
-  if (renders < ROUTINE_MIN_OBSERVATIONS) return null;
 
-  const scores = {};
-  for (const state of LEARNABLE_PRIORITIES) {
-    scores[state] = (stats.states?.[state]?.[cell] ?? 0) / renders;
+  const candidates = [];
+  if (placeKey) candidates.push({ cell: `${placeKey}|${routineCellKey()}`, cellLabel: `at ${placeKey}` });
+  candidates.push({ cell: routineCellKey(), cellLabel: "general" });
+
+  for (const { cell, cellLabel } of candidates) {
+    const renders = stats.cellRenders?.[cell] ?? 0;
+    if (renders < ROUTINE_MIN_OBSERVATIONS) continue;
+    const scores = {};
+    for (const state of LEARNABLE_PRIORITIES) {
+      scores[state] = (stats.states?.[state]?.[cell] ?? 0) / renders;
+    }
+    return { scores, cellLabel, renders };
   }
-  return scores;
+  return null;
 }
 
 // Reorders only the learnable states, only among their own positions:
 // their slots in the configured order stay fixed, and the best-scoring
 // state takes the earliest of those slots. Ties keep the configured
 // relative order, so with no learned signal this is exactly the identity.
-function applySmartPriorities(order, settings) {
+function applySmartPriorities(order, settings, placeKey) {
   if (!settings.behavior.smartPrioritiesEnabled) return order;
-  const scores = routineScoresForNow();
+  const scores = routineScoresForNow(placeKey)?.scores;
   if (!scores) return order;
 
   const slots = [];
@@ -1999,6 +2033,13 @@ async function buildWidgetModel(settings, weather, collectSecondary = false) {
     checkMorningCommute(settings, currentLocation, isWorkDay),
   ]);
 
+  // Where the device is right now, as context — feeds Smart Priorities'
+  // place-aware cells whether or not the place card itself is shown, and
+  // reads through to the presence cache so context survives the card's
+  // linger window expiring.
+  const placeLabel = geofence?.label ?? getCacheEntry(GEOFENCE_PRESENCE_KEY)?.data?.place ?? null;
+  const placeKey = routinePlaceKey(placeLabel);
+
   const isBatteryLow =
     !battery.isCharging && battery.level >= 0 && battery.level <= settings.behavior.lowBatteryThreshold;
   const minutesUntilRain = settings.behavior.rainNowcastEnabled
@@ -2019,7 +2060,7 @@ async function buildWidgetModel(settings, weather, collectSecondary = false) {
       activity: Boolean(shortcutActivity && (shortcutActivity.exerciseMinutes != null || shortcutActivity.standHours != null || shortcutActivity.activeCalories != null)),
       stocks: Boolean(stockQuotes && stockQuotes.length > 0),
       "now-playing": Boolean(shortcutNowPlaying),
-    });
+    }, placeKey);
   }
   const shortcutMessage = readShortcutCustomMessage(settings);
   const hour = new Date().getHours();
@@ -2092,7 +2133,10 @@ async function buildWidgetModel(settings, weather, collectSecondary = false) {
     },
     "custom-message": () => (shortcutMessage ? { priority: "custom-message", weather, message: shortcutMessage, events: standardEvents } : null),
     commute: () => (commute ? { priority: "commute", weather, commute, events: standardEvents } : null),
-    geofence: () => (geofence ? { priority: "geofence", weather, geofence, events: standardEvents } : null),
+    // In the default "context" mode, knowing you're at home isn't news —
+    // the place feeds the smart logic instead of claiming the card. The
+    // visible "At Home/Work" card is the opt-in (Places > Place Card).
+    geofence: () => (geofence && settings.location.placeCardMode === "show" ? { priority: "geofence", weather, geofence, events: standardEvents } : null),
     battery: () => (isBatteryLow && settings.behavior.batteryAlertEnabled ? { priority: "battery", weather, battery, events: standardEvents } : null),
     weather: () => (isPrecipitationImminent(weather) && settings.behavior.weatherAlertEnabled ? { priority: "weather", weather, events: standardEvents } : null),
     "air-quality": () => (badAir != null ? { priority: "air-quality", weather, aqi: badAir, events: standardEvents } : null),
@@ -2127,7 +2171,7 @@ async function buildWidgetModel(settings, weather, collectSecondary = false) {
   // is a fallback, never a chip.
   async function pickPriority() {
     const candidates = [];
-    const order = applySmartPriorities(normalizePriorityOrder(settings.behavior.priorityOrder), settings);
+    const order = applySmartPriorities(normalizePriorityOrder(settings.behavior.priorityOrder), settings, placeKey);
     for (const key of order) {
       const candidate = await priorityCandidates[key]?.();
       if (candidate) {
@@ -4123,6 +4167,13 @@ async function runDiagnostics() {
     }
   }
 
+  {
+    const presencePlace = getCacheEntry(GEOFENCE_PRESENCE_KEY)?.data?.place ?? null;
+    if (settings.location.geofenceEnabled || presencePlace) {
+      lines.push(`🧭 Place context: ${presencePlace ? `at ${presencePlace}` : "away from your configured places"} — ${settings.location.placeCardMode === "show" ? "shown as a card (Place Card: Show Card)" : "feeding smart logic only, never shown (Place Card: Context Only)"}.`);
+    }
+  }
+
   if (settings.location.workScheduleCalendarId) {
     const calendars = await getEventCalendars();
     const workCalendar = calendars.find((c) => c.identifier === settings.location.workScheduleCalendarId);
@@ -4171,18 +4222,18 @@ async function runDiagnostics() {
   // Everything Smart Priorities has learned, in the open — the whole
   // feature stays trustworthy only as long as this stays inspectable.
   if (settings.behavior.smartPrioritiesEnabled) {
-    const cell = routineCellKey();
+    const diagPlaceKey = routinePlaceKey(getCacheEntry(GEOFENCE_PRESENCE_KEY)?.data?.place ?? null);
     const stats = getCacheEntry(ROUTINE_STATS_KEY)?.data;
-    const renders = stats?.cellRenders?.[cell] ?? 0;
-    const scores = routineScoresForNow();
-    if (!scores) {
-      lines.push(`🧠 Smart Priorities: collecting normally — ${renders} of ${ROUTINE_MIN_OBSERVATIONS} renders observed in this time slot. Reordering starts once this slot reaches ${ROUTINE_MIN_OBSERVATIONS}; each time slot warms up on its own. Until then your configured order applies as-is.`);
+    const generalRenders = stats?.cellRenders?.[routineCellKey()] ?? 0;
+    const result = routineScoresForNow(diagPlaceKey);
+    if (!result) {
+      lines.push(`🧠 Smart Priorities: collecting normally — ${generalRenders} of ${ROUTINE_MIN_OBSERVATIONS} renders observed in this time slot. Reordering starts once this slot reaches ${ROUTINE_MIN_OBSERVATIONS}; each time slot warms up on its own. Until then your configured order applies as-is.`);
     } else {
       const ranked = [...LEARNABLE_PRIORITIES]
-        .sort((a, b) => scores[b] - scores[a])
-        .map((state) => `${PRIORITY_LABELS[state] ?? state} ${(scores[state] * 100).toFixed(0)}%`)
+        .sort((a, b) => result.scores[b] - result.scores[a])
+        .map((state) => `${PRIORITY_LABELS[state] ?? state} ${(result.scores[state] * 100).toFixed(0)}%`)
         .join(", ");
-      lines.push(`🧠 Smart Priorities (this time slot, ${renders} observations): ${ranked}. Percentages are how often each has data at this time of day; highest sorts first among the five.`);
+      lines.push(`🧠 Smart Priorities (${result.cellLabel} pattern, ${result.renders} observations): ${ranked}. Percentages are how often each has data at this time of day; highest sorts first among the five.`);
     }
   }
 
@@ -5010,8 +5061,15 @@ const SETTINGS_SECTIONS = [
         suffix: "m",
       },
       {
+        label: "🪧 Place Card",
+        description: "What being at Home/Work/Gym does. Context Only (recommended): the widget never announces where you are — you know — but Smart Priorities uses the place to learn what you actually want to see there. Show Card: the old behavior, an \"At Home · since 9:02\" card and chip.",
+        get: (s) => (s.location.placeCardMode === "show" ? "Show Card" : "Context Only"),
+        apply: (s, value) => { s.location.placeCardMode = value === "Show Card" ? "show" : "context"; },
+        choices: ["Context Only", "Show Card"],
+      },
+      {
         label: "⏳ Place Card Duration",
-        description: "How many minutes the \"At Home/Work/Gym\" card stays on the widget after you arrive, before making room for other info. You're still there — the widget just stops repeating it. 0 keeps it up for the whole visit.",
+        description: "How many minutes the \"At Home/Work/Gym\" card stays on the widget after you arrive, before making room for other info. You're still there — the widget just stops repeating it. 0 keeps it up for the whole visit. Only applies while Place Card is set to Show Card.",
         get: (s) => String(s.location.geofenceLingerMinutes),
         apply: (s, value) => {
           const minutes = Number(value);
