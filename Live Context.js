@@ -122,6 +122,10 @@ const DEFAULT_SETTINGS = {
     // structure (one main card plus quiet secondary chips) rather than
     // strictly one thing at a time.
     multiCardEnabled: true,
+    // Opt-in routine learning — see MARK: - Smart Priorities. Off by
+    // default: it collects (local-only) time-of-day usage patterns, and
+    // that should be a deliberate choice, not a surprise.
+    smartPrioritiesEnabled: false,
     // How data badges render — "filled" | "outlined" | "text". Filled is
     // the classic solid-color pill. The other two exist because some Home
     // Screen icon styles (iOS 26's "Clear," confirmed by direct testing)
@@ -1736,6 +1740,110 @@ function normalizePriorityOrder(storedOrder) {
   return order;
 }
 
+// MARK: - Smart Priorities (routine learning)
+//
+// Opt-in, fully local, and deliberately narrow: it only ever reorders the
+// five ambient personal-stat states below among the slots they already
+// occupy in the priority order — safety alerts, calendar states, and
+// everything else never move, and the block as a whole never rises above
+// or sinks below where the user put it. What it learns is equally simple:
+// at each render it notes which of these states currently has data, keyed
+// by weekday-vs-weekend and 3-hour block. Over a few weeks that becomes
+// "sleep data usually exists on weekday mornings, steps in the evening,
+// stocks after close" — for THIS user's actual routine — and the state
+// most likely to be relevant right now sorts first within the block. All
+// of it lives in the local cache file; turning the setting off deletes it.
+const LEARNABLE_PRIORITIES = ["steps", "sleep", "activity", "stocks", "now-playing"];
+const ROUTINE_STATS_KEY = "routineStats";
+// Below this many observations of the current time cell, the configured
+// order is used untouched — reordering off six data points would be noise
+// wearing a smart hat.
+const ROUTINE_MIN_OBSERVATIONS = 8;
+// Counts halve once a cell has seen this many renders, so a changed
+// routine (new job, new gym schedule) wins out over stale history within
+// weeks instead of being outvoted by months of the old pattern.
+const ROUTINE_CELL_CAP = 200;
+
+// "wd-2" = weekday, 06:00-08:59. Coarse on purpose: 16 cells per state
+// fill up in days, not months, and routines rarely hinge on a finer grain.
+function routineCellKey(date = new Date()) {
+  const dayType = date.getDay() === 0 || date.getDay() === 6 ? "we" : "wd";
+  return `${dayType}-${Math.floor(date.getHours() / 3)}`;
+}
+
+// Called once per render (only while the setting is on) with a map of
+// { stateKey: hasDataRightNow }. cellRenders counts every render in the
+// cell, per-state counts only the renders where that state had data — the
+// ratio is the "how often does this exist at this time of day" score.
+function recordRoutineObservation(presenceByState) {
+  const stats = getCacheEntry(ROUTINE_STATS_KEY)?.data ?? { cellRenders: {}, states: {} };
+  const cell = routineCellKey();
+
+  stats.cellRenders[cell] = (stats.cellRenders[cell] ?? 0) + 1;
+  for (const [state, present] of Object.entries(presenceByState)) {
+    if (!present) continue;
+    stats.states[state] = stats.states[state] ?? {};
+    stats.states[state][cell] = (stats.states[state][cell] ?? 0) + 1;
+  }
+
+  if (stats.cellRenders[cell] > ROUTINE_CELL_CAP) {
+    stats.cellRenders[cell] = Math.floor(stats.cellRenders[cell] / 2);
+    for (const state of Object.keys(stats.states)) {
+      if (stats.states[state][cell]) {
+        stats.states[state][cell] = Math.floor(stats.states[state][cell] / 2);
+      }
+    }
+  }
+
+  setCacheEntry(ROUTINE_STATS_KEY, stats);
+}
+
+// Score per learnable state for the current cell: the fraction of renders
+// in this cell where the state had data (0 when never seen). Returns null
+// while the cell is still below the observation floor.
+function routineScoresForNow() {
+  const stats = getCacheEntry(ROUTINE_STATS_KEY)?.data;
+  if (!stats) return null;
+  const cell = routineCellKey();
+  const renders = stats.cellRenders?.[cell] ?? 0;
+  if (renders < ROUTINE_MIN_OBSERVATIONS) return null;
+
+  const scores = {};
+  for (const state of LEARNABLE_PRIORITIES) {
+    scores[state] = (stats.states?.[state]?.[cell] ?? 0) / renders;
+  }
+  return scores;
+}
+
+// Reorders only the learnable states, only among their own positions:
+// their slots in the configured order stay fixed, and the best-scoring
+// state takes the earliest of those slots. Ties keep the configured
+// relative order, so with no learned signal this is exactly the identity.
+function applySmartPriorities(order, settings) {
+  if (!settings.behavior.smartPrioritiesEnabled) return order;
+  const scores = routineScoresForNow();
+  if (!scores) return order;
+
+  const slots = [];
+  const block = [];
+  order.forEach((key, index) => {
+    if (LEARNABLE_PRIORITIES.includes(key)) {
+      slots.push(index);
+      block.push(key);
+    }
+  });
+  if (block.length < 2) return order;
+
+  const configuredIndex = new Map(block.map((key, i) => [key, i]));
+  const ranked = [...block].sort(
+    (a, b) => (scores[b] - scores[a]) || (configuredIndex.get(a) - configuredIndex.get(b))
+  );
+
+  const adjusted = [...order];
+  slots.forEach((slot, i) => { adjusted[slot] = ranked[i]; });
+  return adjusted;
+}
+
 // Compiles each keyword into a case-insensitive regex, silently skipping
 // any pattern that isn't valid regex rather than letting bad user input
 // (typed into a plain settings text field) crash the widget.
@@ -1859,6 +1967,18 @@ async function buildWidgetModel(settings, weather, collectSecondary = false) {
   const shortcutSleep = readShortcutSleep(settings);
   const shortcutActivity = readShortcutActivity(settings);
   const shortcutNowPlaying = readShortcutNowPlaying(settings);
+
+  // Smart Priorities observation — presence only, from locals already
+  // computed above, so learning costs one cache write and nothing else.
+  if (settings.behavior.smartPrioritiesEnabled) {
+    recordRoutineObservation({
+      steps: shortcutSteps != null,
+      sleep: shortcutSleep != null,
+      activity: Boolean(shortcutActivity && (shortcutActivity.exerciseMinutes != null || shortcutActivity.standHours != null || shortcutActivity.activeCalories != null)),
+      stocks: Boolean(stockQuotes && stockQuotes.length > 0),
+      "now-playing": Boolean(shortcutNowPlaying),
+    });
+  }
   const shortcutMessage = readShortcutCustomMessage(settings);
   const hour = new Date().getHours();
 
@@ -1965,7 +2085,8 @@ async function buildWidgetModel(settings, weather, collectSecondary = false) {
   // is a fallback, never a chip.
   async function pickPriority() {
     const candidates = [];
-    for (const key of normalizePriorityOrder(settings.behavior.priorityOrder)) {
+    const order = applySmartPriorities(normalizePriorityOrder(settings.behavior.priorityOrder), settings);
+    for (const key of order) {
       const candidate = await priorityCandidates[key]?.();
       if (candidate) {
         candidates.push(candidate);
@@ -4000,6 +4121,24 @@ async function runDiagnostics() {
     lines.push(message ? `🔗 Shortcuts custom message: "${message.title}".` : "🔗 Shortcuts custom message: no fresh message from a Shortcut yet.");
   }
 
+  // Everything Smart Priorities has learned, in the open — the whole
+  // feature stays trustworthy only as long as this stays inspectable.
+  if (settings.behavior.smartPrioritiesEnabled) {
+    const cell = routineCellKey();
+    const stats = getCacheEntry(ROUTINE_STATS_KEY)?.data;
+    const renders = stats?.cellRenders?.[cell] ?? 0;
+    const scores = routineScoresForNow();
+    if (!scores) {
+      lines.push(`🧠 Smart Priorities: still warming up for this time slot (${renders} of ${ROUTINE_MIN_OBSERVATIONS} observations) — using your configured order as-is.`);
+    } else {
+      const ranked = [...LEARNABLE_PRIORITIES]
+        .sort((a, b) => scores[b] - scores[a])
+        .map((state) => `${PRIORITY_LABELS[state] ?? state} ${(scores[state] * 100).toFixed(0)}%`)
+        .join(", ");
+      lines.push(`🧠 Smart Priorities (this time slot, ${renders} observations): ${ranked}. Percentages are how often each has data at this time of day; highest sorts first among the five.`);
+    }
+  }
+
   const weather = await fetchWeather(settings);
   if (weather) {
     lines.push(`🌤️ Weather OK: ${formatTemperature(weather, settings)}, ${describeWeather(weather)}.`);
@@ -4305,6 +4444,17 @@ const SETTINGS_SECTIONS = [
         description: "When on, medium and large widgets also show the next couple of states that currently apply as small tappable chips under the main card — the way Pixel's own At a Glance pairs its main card with secondary chips. They follow your Priority Order and Pill Style. Small widgets never have the room, so they always show just the main card.",
         get: (s) => (s.behavior.multiCardEnabled ? "On" : "Off"),
         apply: (s, value) => { s.behavior.multiCardEnabled = value === "On"; },
+        choices: ["On", "Off"],
+      },
+      {
+        label: "🧠 Smart Priorities",
+        description: "When on, the widget learns which of your personal stats (steps, sleep, activity, stocks, now playing) tend to have data at which times of day, and sorts just those five among themselves to match — sleep first in the morning, steps in the evening, and so on. They still occupy the same slots in your Priority Order; nothing else ever moves, and safety alerts are untouchable. Everything learned stays in this widget's own local cache, Diagnostics shows exactly what it has learned, and turning this off deletes the learned data.",
+        get: (s) => (s.behavior.smartPrioritiesEnabled ? "On" : "Off"),
+        apply: (s, value) => {
+          const enabled = value === "On";
+          if (!enabled && s.behavior.smartPrioritiesEnabled) clearCacheEntry(ROUTINE_STATS_KEY);
+          s.behavior.smartPrioritiesEnabled = enabled;
+        },
         choices: ["On", "Off"],
       },
     ],
