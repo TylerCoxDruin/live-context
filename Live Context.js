@@ -6208,6 +6208,19 @@ async function run() {
     return;
   }
 
+  // The main menu below is Alert-based, which only works when someone is
+  // actually looking at the interactive Scriptable app. Siri invocation
+  // is confirmed to crash it ("Alerts are not supported on Siri");
+  // notifications and the share-sheet action extension are the same
+  // class of non-interactive context, so they're guarded here too rather
+  // than waiting for their own crash reports. None of these can use a
+  // settings menu anyway, so exiting quietly is the correct behavior,
+  // not just a crash workaround.
+  if (config.runsWithSiri || config.runsInNotification || config.runsInActionExtension) {
+    Script.complete();
+    return;
+  }
+
   const choice = await presentMainMenu();
 
   if (choice === 1) {
