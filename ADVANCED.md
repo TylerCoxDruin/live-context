@@ -392,6 +392,15 @@ A couple of things worth knowing before you start changing things:
   rather than throwing an obvious error. Check
   [docs.scriptable.app](https://docs.scriptable.app) before leaning on an
   API this file isn't already using somewhere else.
+- **Every network call has to respect the render budget.** A widget gets
+  a short, hard time limit from iOS, and blowing it kills the render
+  outright with "Received timeout when running script" (no error card, no
+  partial content). `hasRenderBudget(reserveMs)` is the guard: optional
+  fetches check it and skip rather than risk the whole widget, request
+  timeouts are deliberately short, and anything that can repeat per-item
+  (geocoding runs once per configured address) caches its failures so a
+  miss doesn't cost a full request every render. If you add a network
+  call, gate it the same way.
 - `Live Context Bridge.js` deliberately duplicates a few small functions
   from `Live Context.js` (the cache file plumbing, mainly) instead of
   importing them, so a change in one script can't quietly break the

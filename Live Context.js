@@ -717,7 +717,13 @@ function clearBackgroundImage(variant) {
 // MARK: - Weather
 
 const WEATHER_CACHE_KEY = "weather";
-const WEATHER_REQUEST_TIMEOUT_SECONDS = 8;
+// Deliberately short: inside a widget's time budget a request that hasn't
+// answered in a few seconds is worth abandoning, since the alternative is
+// the whole render being killed. Cached data covers the gap.
+const WEATHER_REQUEST_TIMEOUT_SECONDS = 5;
+// Geocoding stacks worse than anything else here (up to three rungs per
+// address, times three places), so it gets the tightest leash.
+const NOMINATIM_REQUEST_TIMEOUT_SECONDS = 4;
 const VALID_WEATHER_UNITS = ["imperial", "metric", "standard"];
 
 function hasApiKey(settings) {
@@ -1250,6 +1256,11 @@ function haversineDistanceMeters(lat1, lon1, lat2, lon2) {
 // Key is versioned: v2 abandons entries written while an unvalidated
 // retry rung could cache a same-named street from the wrong zip.
 const GEOCODE_CACHE_KEY = "geocodedAddressesV2";
+// Addresses that came back empty, so they stop costing a full request
+// ladder every render. Cleared wholesale on this cadence rather than per
+// entry — a single timestamp is enough for "try the failures again".
+const GEOCODE_FAILURE_CACHE_KEY = "geocodeFailures";
+const GEOCODE_FAILURE_RETRY_MINUTES = 720;
 
 // Nominatim's usage policy (https://operations.osmfoundation.org/policies/nominatim/)
 // requires a descriptive User-Agent and forbids hammering it with repeat
@@ -1269,9 +1280,10 @@ async function requestNominatimCoords(params) {
   const query = Object.entries({ ...params, format: "json", limit: "1", addressdetails: "1" })
     .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
     .join("&");
+  if (!hasRenderBudget(NOMINATIM_REQUEST_TIMEOUT_SECONDS * 1000)) return null;
   const request = new Request(`https://nominatim.openstreetmap.org/search?${query}`);
   request.headers = { "User-Agent": NOMINATIM_USER_AGENT };
-  request.timeoutInterval = WEATHER_REQUEST_TIMEOUT_SECONDS;
+  request.timeoutInterval = NOMINATIM_REQUEST_TIMEOUT_SECONDS;
 
   const results = await request.loadJSON();
   const first = results?.[0];
@@ -1329,6 +1341,14 @@ async function geocodeViaNominatim(text, cacheKey) {
   const coordsByText = cached?.data ?? {};
   if (coordsByText[text]) return coordsByText[text];
 
+  // Failures are remembered too, for a while. Without this an address
+  // OpenStreetMap simply can't resolve costs its full three-request
+  // ladder on every single render, forever — the single biggest way this
+  // script can run itself out of a widget's time budget. Re-checked
+  // periodically so a street OSM adds later starts working on its own.
+  const failures = getCacheEntry(GEOCODE_FAILURE_CACHE_KEY, GEOCODE_FAILURE_RETRY_MINUTES);
+  if (failures && !failures.stale && failures.data[text]) return null;
+
   try {
     const structured = parseUSAddressParts(text);
     let result = structured ? await requestNominatimCoords(structured) : null;
@@ -1353,7 +1373,11 @@ async function geocodeViaNominatim(text, cacheKey) {
     }
 
     if (!result) result = await requestNominatimCoords({ q: text });
-    if (!result) return null;
+    if (!result) {
+      const known = failures && !failures.stale ? failures.data : {};
+      setCacheEntry(GEOCODE_FAILURE_CACHE_KEY, { ...known, [text]: true });
+      return null;
+    }
 
     const coords = { latitude: result.latitude, longitude: result.longitude };
     setCacheEntry(cacheKey, { ...coordsByText, [text]: coords });
@@ -1562,6 +1586,9 @@ async function fetchDrivingRoute(fromCoords, toCoords) {
   if (cached && !cached.stale && cached.data[routeKey]) return cached.data[routeKey];
 
   try {
+    // Routing is an upgrade over the straight-line estimate, never a
+    // requirement — skipped entirely when the budget is thin.
+    if (!hasRenderBudget(OSRM_REQUEST_TIMEOUT_SECONDS * 1000)) return null;
     const url = `https://router.project-osrm.org/route/v1/driving/${round(fromCoords.longitude)},${round(fromCoords.latitude)};${round(toCoords.longitude)},${round(toCoords.latitude)}?overview=false`;
     const request = new Request(url);
     request.timeoutInterval = OSRM_REQUEST_TIMEOUT_SECONDS;
@@ -2879,6 +2906,24 @@ function customMessageIcon(settings, message) {
 // each other).
 let currentTextAlignment = "center";
 
+// A widget process gets a short, hard time budget from iOS; blow past it
+// and the whole render is killed with "Received timeout when running
+// script" — no error card, no partial content. A cold render can want a
+// dozen network round trips (weather, forecast, air quality, alerts,
+// stocks, geocoding per place, routing), so this is the ceiling that
+// keeps them from ever adding up to that. Set at the top of every render;
+// optional work checks it and quietly skips rather than risking the whole
+// widget. The essentials (cached data, calendar, battery) never consult it.
+const RENDER_BUDGET_MS = 11000;
+let renderDeadline = Number.POSITIVE_INFINITY;
+
+// True while there's still room for a request expected to take up to
+// `reserveMs`. Optional fetches pass their own timeout so a request that
+// couldn't finish in time is never started.
+function hasRenderBudget(reserveMs = 0) {
+  return Date.now() + reserveMs < renderDeadline;
+}
+
 // Same reasoning and lifecycle as currentTextAlignment above — set once
 // per render, read by the pill primitives below rather than threaded
 // through every individual state's rendering case. "filled" is the classic
@@ -3459,6 +3504,7 @@ async function createWidget(settings, family = "small") {
   // render produces (see addAlignedRow) picks it up consistently.
   currentTextAlignment = settings.behavior.textAlignment ?? "center";
   currentPillStyle = settings.behavior.pillStyle ?? "filled";
+  renderDeadline = Date.now() + RENDER_BUDGET_MS;
 
   try {
     // Fetched once here (cached, so cheap) and threaded through both
@@ -4468,6 +4514,10 @@ async function openTransparentBackgroundTool() {
 async function runDiagnostics() {
   const settings = getCurrentSettings();
   const lines = [];
+  // Running in-app has no time limit, and the whole point here is a true
+  // answer — so remembered geocode failures are cleared first, forcing a
+  // real retry of every address instead of echoing an old miss.
+  clearCacheEntry(GEOCODE_FAILURE_CACHE_KEY);
 
   try {
     const calendars = await getEventCalendars();
