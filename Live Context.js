@@ -3472,15 +3472,14 @@ async function createWidget(settings, family = "small") {
     // pill/color/background system below applies. Same model, same
     // priority order; only the presentation differs.
     if (String(family).startsWith("accessory")) {
+      const excluded = accessoryExcludedPriorities(settings, family);
       if (isWindDownTime(settings, weather)) {
-        const widget = renderAccessoryWidget(
-          { glyph: "moon.zzz.fill", title: "Wind Down", subtitle: settings.behavior.windDownMessage, compact: { glyph: "moon.zzz.fill", value: "Zzz" } },
-          family
-        );
+        const lines = await windDownAccessoryLines(settings, weather, excluded);
+        recordAccessoryClaim(family, lines.claim);
+        const widget = renderAccessoryWidget(lines, family);
         widget.refreshAfterDate = computeWindDownRefreshDate();
         return widget;
       }
-      const excluded = accessoryExcludedPriorities(settings, family);
       const model = await buildWidgetModel(settings, weather, false, excluded);
       recordAccessoryClaim(family, model.priority);
       const widget = renderAccessoryWidget(accessoryLines(model, settings), family);
@@ -3537,6 +3536,80 @@ function accessoryExcludedPriorities(settings, family) {
 
 function recordAccessoryClaim(family, priority) {
   setCacheEntry(`accessoryClaim-${family}`, { priority });
+}
+
+// The Lock Screen during wind-down: iOS's own Sleep Focus screen already
+// dims everything, labels itself Sleep, and shows the alarm chip — so a
+// widget announcing "Wind Down" plus a truncated slogan is redundant
+// twice over. Instead each accessory widget picks the most useful
+// nighttime fact it can — charge warning, weather heads-up, tomorrow's
+// first event, the fed-in alarm — coordinating through the same claims
+// as the daytime states so multiple widgets pick different ones. The
+// bare "Wind Down" card is the last resort, not the headline.
+async function windDownAccessoryLines(settings, weather, excluded) {
+  const candidates = [];
+
+  const batteryPercent = Math.round(Device.batteryLevel() * 100);
+  const isChargeWarning =
+    settings.behavior.windDownChargeReminderEnabled &&
+    !Device.isCharging() &&
+    Device.batteryLevel() >= 0 &&
+    batteryPercent <= settings.behavior.windDownChargeThresholdPercent;
+  if (isChargeWarning) {
+    const batteryGlyph = batterySymbolName(Device.batteryLevel());
+    candidates.push({
+      claim: "wind-down-charge",
+      glyph: batteryGlyph,
+      title: `Charge · ${batteryPercent}%`,
+      subtitle: "Before bed",
+      compact: { glyph: batteryGlyph, value: `${batteryPercent}%` },
+    });
+  }
+
+  const weatherHeadsUp = windDownWeatherHeadsUp(settings, weather);
+  if (weatherHeadsUp) {
+    const weatherGlyph = weatherSymbolName(weather);
+    candidates.push({
+      claim: "wind-down-weather",
+      glyph: weatherGlyph,
+      title: weatherHeadsUp,
+      subtitle: null,
+      compact: { glyph: weatherGlyph, value: weatherHeadsUp.split(" ")[0] },
+    });
+  }
+
+  const tomorrowEvent = await fetchTomorrowFirstEvent(settings);
+  if (tomorrowEvent) {
+    candidates.push({
+      claim: "wind-down-tomorrow",
+      glyph: "calendar",
+      title: tomorrowEvent.title,
+      subtitle: `Tomorrow · ${formatClockTime(tomorrowEvent.startDate, settings)}`,
+      compact: { glyph: "calendar", value: "Tmrw" },
+    });
+  }
+
+  const alarmTime = readShortcutAlarm(settings);
+  if (alarmTime) {
+    candidates.push({
+      claim: "wind-down-alarm",
+      glyph: "alarm.fill",
+      title: `Alarm · ${formatClockTime(alarmTime, settings)}`,
+      subtitle: null,
+      compact: { glyph: "alarm.fill", value: formatClockTime(alarmTime, settings).replace(/\s+/g, "") },
+    });
+  }
+
+  for (const candidate of candidates) {
+    if (!excluded?.has(candidate.claim)) return candidate;
+  }
+  return {
+    claim: "wind-down",
+    glyph: "moon.zzz.fill",
+    title: "Wind Down",
+    subtitle: null,
+    compact: { glyph: "moon.zzz.fill", value: "Zzz" },
+  };
 }
 
 // "8.4k" instead of "8,432" — a Lock Screen circle has room for about

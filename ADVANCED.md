@@ -320,6 +320,13 @@ complication, flip on **Lock Screen Shows Weather** so Live Context
 skips plain weather there too. The script can't see your Lock Screen,
 so that one's a toggle rather than automatic.
 
+At night the Lock Screen widgets don't announce Wind Down either. iOS's
+Sleep Focus screen already dims itself, says "Sleep", and shows your
+alarm, so instead each widget picks the most useful nighttime fact it
+has: charge your phone, a weather heads-up for tonight, tomorrow's first
+event, or your alarm. The plain "Wind Down" card only appears when none
+of those apply.
+
 ### Pinning a widget to one thing
 
 Any widget (Lock Screen or Home Screen) can be locked to a single state
