@@ -129,6 +129,13 @@ const DEFAULT_SETTINGS = {
     // structure (one main card plus quiet secondary chips) rather than
     // strictly one thing at a time.
     multiCardEnabled: true,
+    // Lock Screen widgets check what the other accessory widgets last
+    // showed (via the shared cache) and pick something different when
+    // they can — see accessoryExcludedPriorities.
+    lockTeamworkEnabled: true,
+    // The user telling us Apple's own weather complication is already on
+    // their Lock Screen — undetectable from code.
+    lockScreenShowsWeather: false,
     // Opt-in routine learning — see MARK: - Smart Priorities. Off by
     // default: it collects (local-only) time-of-day usage patterns, and
     // that should be a deliberate choice, not a surprise.
@@ -2129,7 +2136,7 @@ function findHighValueEvent(events, patterns) {
 // "Near Home" card would otherwise mask the commute for the whole window.
 // Health-adjacent heads-ups (AQI, UV) sit just under live weather; the
 // rare-and-personal ones (holiday, birthdays) above the routine recaps.
-async function buildWidgetModel(settings, weather, collectSecondary = false) {
+async function buildWidgetModel(settings, weather, collectSecondary = false, excludedPriorities = null) {
   const [events, forecast, stockQuotes, severeAlerts, contactBirthdays, dueReminders, airQuality] = await Promise.all([
     fetchUpcomingEvents(settings),
     fetchForecast(settings, weather),
@@ -2347,6 +2354,10 @@ async function buildWidgetModel(settings, weather, collectSecondary = false) {
     const candidates = [];
     const order = applySmartPriorities(normalizePriorityOrder(settings.behavior.priorityOrder), settings, placeKey);
     for (const key of order) {
+      // Lock Screen teamwork: states another accessory widget is already
+      // showing get skipped here — the default greeting/weather fallback
+      // below is never excluded, so a widget always has something to show.
+      if (excludedPriorities?.has(key)) continue;
       const candidate = await priorityCandidates[key]?.();
       if (candidate) {
         candidates.push(candidate);
@@ -3469,7 +3480,9 @@ async function createWidget(settings, family = "small") {
         widget.refreshAfterDate = computeWindDownRefreshDate();
         return widget;
       }
-      const model = await buildWidgetModel(settings, weather);
+      const excluded = accessoryExcludedPriorities(settings, family);
+      const model = await buildWidgetModel(settings, weather, false, excluded);
+      recordAccessoryClaim(family, model.priority);
       const widget = renderAccessoryWidget(accessoryLines(model, settings), family);
       widget.refreshAfterDate = computeRefreshDate(model, settings);
       return widget;
@@ -3495,6 +3508,37 @@ async function createWidget(settings, family = "small") {
 // Boils the full model down to two short plain-text lines. Reuses the
 // same formatters as the Home Screen rendering so numbers/times read
 // identically in both places — only the layout is simpler.
+// Lock Screen teamwork: a widget can't see what its neighbors display,
+// but every neighbor renders through this same script — so each records
+// what it showed (per accessory family, in the shared cache) and the
+// others avoid repeating it. A widget keeps displaying its last render
+// until iOS refreshes it, which is exactly what a recent claim
+// represents; claims older than the freshness window are ignored so a
+// widget removed from the Lock Screen stops influencing anyone within a
+// few hours. Same-family duplicates can't be told apart — pin those
+// ({"pin": ...}) instead.
+const ACCESSORY_FAMILIES = ["accessoryInline", "accessoryCircular", "accessoryRectangular"];
+const ACCESSORY_CLAIM_FRESH_MINUTES = 360;
+
+function accessoryExcludedPriorities(settings, family) {
+  const excluded = new Set();
+  // Apple's own weather complication can't be detected from code — the
+  // Lock Screen Shows Weather setting is the user telling us it's there.
+  if (settings.behavior.lockScreenShowsWeather) excluded.add("weather");
+  if (settings.behavior.lockTeamworkEnabled) {
+    for (const other of ACCESSORY_FAMILIES) {
+      if (other === family) continue;
+      const claim = getCacheEntry(`accessoryClaim-${other}`, ACCESSORY_CLAIM_FRESH_MINUTES);
+      if (claim && !claim.stale && claim.data.priority) excluded.add(claim.data.priority);
+    }
+  }
+  return excluded;
+}
+
+function recordAccessoryClaim(family, priority) {
+  setCacheEntry(`accessoryClaim-${family}`, { priority });
+}
+
 // "8.4k" instead of "8,432" — a Lock Screen circle has room for about
 // four characters before scaling turns them to fuzz.
 function compactNumber(value) {
@@ -3593,20 +3637,26 @@ function accessoryLines(model, settings) {
     case "now-playing":
       return { glyph: "music.note", title: model.nowPlaying.title, subtitle: model.nowPlaying.artist, compact: { glyph: "music.note", value: "♪" } };
     default: {
-      // The Lock Screen already shows the time and date, and a greeting is
-      // decoration, not information — so the idle state leads with weather
-      // and spends its second line on the next event when there is one.
-      // The greeting only appears when there's literally nothing else.
+      // The Lock Screen natively shows the time and date, so neither ever
+      // appears here, and a greeting is decoration, not information — the
+      // idle state leads with weather (unless the Lock Screen Shows
+      // Weather setting says that's already covered) and spends its
+      // second line on the next event. The greeting only appears when
+      // there's literally nothing else.
       const nextEvent = model.events?.[0] ?? null;
-      const title = weather ? `${temp} ${describeWeather(weather)}` : `${getGreeting()}, ${settings.user.name}`;
-      const subtitle = nextEvent
-        ? `${nextEvent.title} · in ${formatCountdownValue(nextEvent.startDate)}`
-        : weather ? formatShortOrdinalDate(settings) : null;
+      const showWeather = weather && !settings.behavior.lockScreenShowsWeather;
+      const title = showWeather
+        ? `${temp} ${describeWeather(weather)}`
+        : nextEvent ? nextEvent.title : `${getGreeting()}, ${settings.user.name}`;
+      const subtitle = showWeather
+        ? (nextEvent ? `${nextEvent.title} · in ${formatCountdownValue(nextEvent.startDate)}` : null)
+        : nextEvent ? `In ${formatCountdownValue(nextEvent.startDate)}` : null;
+      const idleGlyph = showWeather ? weatherSymbolName(weather) : nextEvent ? "calendar" : "sparkles";
       return {
-        glyph: weather ? weatherSymbolName(weather) : "sparkles",
+        glyph: idleGlyph,
         title,
         subtitle,
-        compact: { glyph: weather ? weatherSymbolName(weather) : "sparkles", value: compactTemp ?? String(new Date().getDate()) },
+        compact: { glyph: idleGlyph, value: showWeather ? compactTemp : nextEvent ? formatCountdownValue(nextEvent.startDate).replace(/\s+/g, "") : String(new Date().getDate()) },
       };
     }
   }
@@ -4499,6 +4549,19 @@ async function runDiagnostics() {
     }
   }
 
+  if (settings.behavior.lockTeamworkEnabled) {
+    const claims = [];
+    for (const accessoryFamily of ACCESSORY_FAMILIES) {
+      const claim = getCacheEntry(`accessoryClaim-${accessoryFamily}`, ACCESSORY_CLAIM_FRESH_MINUTES);
+      if (claim && !claim.stale && claim.data.priority) {
+        claims.push(`${accessoryFamily.replace("accessory", "").toLowerCase()}: ${PRIORITY_LABELS[claim.data.priority] ?? claim.data.priority}`);
+      }
+    }
+    if (claims.length > 0) {
+      lines.push(`🤝 Lock Screen teamwork — currently claimed: ${claims.join(", ")}. Each widget avoids repeating what the others show.`);
+    }
+  }
+
   const weather = await fetchWeather(settings);
   if (weather) {
     lines.push(`🌤️ Weather OK: ${formatTemperature(weather, settings)}, ${describeWeather(weather)}.`);
@@ -4804,6 +4867,20 @@ const SETTINGS_SECTIONS = [
         description: "When on, the widget also shows what else currently applies as small tappable chips under the main card — one chip on medium, up to two on large — the way Pixel's own At a Glance pairs its main card with secondary chips. They follow your Priority Order and Pill Style. Small widgets never have the room, so they always show just the main card.",
         get: (s) => (s.behavior.multiCardEnabled ? "On" : "Off"),
         apply: (s, value) => { s.behavior.multiCardEnabled = value === "On"; },
+        choices: ["On", "Off"],
+      },
+      {
+        label: "🤝 Lock Screen Teamwork",
+        description: "When on, your Lock Screen widgets check what the other Lock Screen widgets are showing and pick something different when they can — one shows the event, another your steps, instead of three copies of the same weather. Widgets pinned via their parameter always show their pin regardless. Only affects Lock Screen widgets.",
+        get: (s) => (s.behavior.lockTeamworkEnabled ? "On" : "Off"),
+        apply: (s, value) => { s.behavior.lockTeamworkEnabled = value === "On"; },
+        choices: ["On", "Off"],
+      },
+      {
+        label: "🌤️ Lock Screen Shows Weather",
+        description: "Turn on if your Lock Screen already has Apple's own weather complication or weather in the line above the clock — there's no way to detect that from code, so this is you telling the widget. Live Context's Lock Screen widgets then skip plain weather and spend the space on something the Lock Screen isn't already showing. Severe weather alerts still come through.",
+        get: (s) => (s.behavior.lockScreenShowsWeather ? "On" : "Off"),
+        apply: (s, value) => { s.behavior.lockScreenShowsWeather = value === "On"; },
         choices: ["On", "Off"],
       },
       {

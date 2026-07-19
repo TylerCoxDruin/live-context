@@ -307,6 +307,19 @@ iOS forces Lock Screen widgets into its own monochrome style, so there
 are no pills or colors there by design. Preview from the main menu under
 **Preview Widget > Lock Screen**.
 
+### Widgets that don't repeat each other
+
+Multiple Lock Screen widgets coordinate automatically: each one records
+what it's showing, and the others check that and pick something
+different when they can, so you get the event on one, steps on another,
+instead of three copies of the weather. This is on by default
+(Settings > Priorities > Lock Screen Teamwork). Two notes: widgets of
+the same shape can't be told apart, so pin those (below) if you run two
+circulars; and if your Lock Screen already has Apple's own weather
+complication, flip on **Lock Screen Shows Weather** so Live Context
+skips plain weather there too. The script can't see your Lock Screen,
+so that one's a toggle rather than automatic.
+
 ### Pinning a widget to one thing
 
 Any widget (Lock Screen or Home Screen) can be locked to a single state
