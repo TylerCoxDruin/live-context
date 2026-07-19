@@ -104,34 +104,7 @@ stores it, and the widget picks it up on its next refresh.
 Every one of these is off by default. Nothing changes until you build the
 matching Shortcut and turn its toggle on under Settings > Shortcuts.
 
-### Start here: the ready-made sync shortcut
-
-Building these by hand is the fiddliest part of the whole setup, so
-there's one shortcut in the repo that covers most of it:
-[`shortcuts/Live Context Sync.shortcut`](shortcuts/Live%20Context%20Sync.shortcut).
-Download it on your iPhone, open it to import, and it feeds three things
-in one run: today's steps, today's exercise minutes, and last night's
-sleep.
-
-Set it up as a Personal Automation on an hourly schedule (Shortcuts app >
-Automation > Time of Day > Repeat Hourly) and those three stay current on
-their own. Then turn on **Step Count**, **Activity Rings**, and **Sleep**
-under Settings > Shortcuts.
-
-Two things to check right after importing, because Shortcuts sometimes
-drops third-party action settings on import: open it in the editor and
-confirm each of the three **Run Script** actions points at **Live
-Context Bridge**, has the Dictionary above it as its input, and has Run
-in App switched off.
-
-It's iPhone/iPad only (the Health actions don't configure on a Mac), and
-if a shortcut with that name already exists the import silently skips, so
-delete the old one first.
-
 ### The general pattern
-
-To wire up anything the sync shortcut doesn't cover, or to build your own
-version:
 
 For any of the types below, build a Shortcut that:
 
@@ -182,17 +155,10 @@ samples that the Shortcut has to add up itself. The bridge accepts hours,
 minutes, or seconds so you can send whichever unit your Shortcut ends up
 with and skip the conversion math.
 
-The sync shortcut above already handles sleep, so most people don't need
-anything else here. If you only want sleep and nothing else, there's a
-smaller single-purpose version:
-[`shortcuts/Live Context Sleep.shortcut`](shortcuts/Live%20Context%20Sleep.shortcut).
-Use one or the other, not both on automations, or the bridge gets the
-same sleep value sent twice.
-
-Worth knowing either way: they sum all sleep samples in the window, and
-on newer iOS versions Health may include "In Bed" or "Awake" stages in
-that, which overcounts a bit. If your numbers look high, add a filter for
-the Asleep stage in the Find Health Samples action.
+Worth knowing: it sums all sleep samples in the window, and on newer iOS
+versions Health may include "In Bed" or "Awake" stages in that, which
+overcounts a bit. If your numbers look high, add a filter for the Asleep
+stage in the Find Health Samples action.
 
 - Dictionary: `{"type": "sleep", "hours": 7.2}`, or
   `{"type": "sleep", "minutes": 432}`, or `{"type": "sleep", "seconds": 25920}`

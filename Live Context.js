@@ -4,9 +4,6 @@
 // Live Context — a modern, single-file "At a Glance" widget for Scriptable.
 // Formerly "Pixel Widget"; existing settings/cache/background files carry
 // over automatically (see migrateStorageLayout).
-//
-// If this is useful to you, tips are welcome but never required:
-// https://www.buymeacoffee.com/t.cd
 
 // MARK: - Configuration
 
@@ -4501,8 +4498,6 @@ function addSecondaryCardChips(widget, model, settings, family, hasBackgroundIma
 
 // MARK: - Settings Menu
 
-const SUPPORT_URL = "https://www.buymeacoffee.com/t.cd";
-
 async function presentMainMenu() {
   const alert = new Alert();
   alert.title = "Live Context";
@@ -4518,9 +4513,8 @@ async function presentMainMenu() {
   alert.addAction("Run Diagnostics");
   alert.addAction("🔐 Check Permissions");
   alert.addAction("🖼️ Create Transparent Background");
-  alert.addAction("☕ Support the Developer");
   alert.addCancelAction("Cancel");
-  return await alert.presentAlert(); // 0 = preview, 1 = edit, 2 = diagnostics, 3 = permissions, 4 = transparent background, 5 = support, -1 = cancelled
+  return await alert.presentAlert(); // 0 = preview, 1 = edit, 2 = diagnostics, 3 = permissions, 4 = transparent background, -1 = cancelled
 }
 
 // Hands off to the separate "Transparent & Blurred Widgets.js" script via
@@ -6237,12 +6231,6 @@ async function run() {
 
   if (choice === 4) {
     await openTransparentBackgroundTool();
-    Script.complete();
-    return;
-  }
-
-  if (choice === 5) {
-    await Safari.openInApp(SUPPORT_URL, false);
     Script.complete();
     return;
   }
