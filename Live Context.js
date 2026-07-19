@@ -3658,6 +3658,33 @@ async function windDownAccessoryLines(settings, weather, excluded) {
   };
 }
 
+// The inline slot shares one line with the Lock Screen's own date, so
+// there's room for roughly this much before iOS starts hacking the end
+// off — and a truncated phrase usually loses exactly the part that
+// mattered ("Birthday Today · Daniel Wa…" keeps the category and drops
+// the name). Rather than trimming, states supply an `inline` phrase
+// carrying the actual news in as few words as possible; the fallbacks
+// below prefer a complete shorter phrase over a clipped longer one.
+const INLINE_MAX_CHARS = 28;
+
+function inlineText(lines) {
+  // Most-informative first, shortest last — the first one that actually
+  // fits wins, so a long event title falls back to the title alone rather
+  // than a clipped sentence. Truncation is the last resort, not the
+  // first response.
+  const candidates = [
+    lines.inline,
+    lines.subtitle ? `${lines.title} · ${lines.subtitle}` : null,
+    lines.title,
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (candidate.length <= INLINE_MAX_CHARS) return candidate;
+  }
+  const shortest = candidates.reduce((best, candidate) => (candidate.length < best.length ? candidate : best), candidates[0] ?? "");
+  return `${shortest.slice(0, INLINE_MAX_CHARS - 1).trimEnd()}…`;
+}
+
 // "8.4k" instead of "8,432" — a Lock Screen circle has room for about
 // four characters before scaling turns them to fuzz.
 function compactNumber(value) {
@@ -3677,19 +3704,19 @@ function accessoryLines(model, settings) {
 
   switch (model.priority) {
     case "severe-weather":
-      return { glyph: "exclamationmark.triangle.fill", title: model.alert.event ?? "Severe Weather", subtitle: formatAlertUntil(model.alert, settings), compact: { glyph: "exclamationmark.triangle.fill", value: "Alert" } };
+      return { glyph: "exclamationmark.triangle.fill", title: model.alert.event ?? "Severe Weather", subtitle: formatAlertUntil(model.alert, settings), inline: model.alert.event ?? "Severe Weather", compact: { glyph: "exclamationmark.triangle.fill", value: "Alert" } };
     case "high-value-event":
     case "event": {
       const glyph = model.priority === "high-value-event" ? "star.circle.fill" : "calendar";
-      return { glyph, title: model.event.title, subtitle: `In ${formatCountdownValue(model.event.startDate)}`, compact: { glyph, value: formatCountdownValue(model.event.startDate).replace(/\s+/g, "") } };
+      return { glyph, title: model.event.title, subtitle: `In ${formatCountdownValue(model.event.startDate)}`, inline: `${model.event.title} in ${formatCountdownValue(model.event.startDate)}`, compact: { glyph, value: formatCountdownValue(model.event.startDate).replace(/\s+/g, "") } };
     }
     case "event-arrival":
-      return { glyph: "figure.walk", title: `Welcome to ${model.event.title}!`, subtitle: model.event.location, compact: { glyph: "figure.walk", value: "Here" } };
+      return { glyph: "figure.walk", title: `Welcome to ${model.event.title}!`, subtitle: model.event.location, inline: `At ${model.event.title}`, compact: { glyph: "figure.walk", value: "Here" } };
     case "rain-incoming":
       return { glyph: "cloud.rain.fill", title: `Rain in ${model.minutesUntilRain}m`, subtitle: temp, compact: { glyph: "cloud.rain.fill", value: `${model.minutesUntilRain}m` } };
     case "custom-message": {
       const glyph = model.message.glyph && SFSymbol.named(model.message.glyph) ? model.message.glyph : "bell.badge.fill";
-      return { glyph, title: model.message.title, subtitle: model.message.subtitle, compact: { glyph, value: "New" } };
+      return { glyph, title: model.message.title, subtitle: model.message.subtitle, inline: model.message.title, compact: { glyph, value: "New" } };
     }
     case "commute":
       return { glyph: "car.fill", title: `Commute ~${model.commute.minutes} min`, subtitle: formatDistance(model.commute.distanceMeters, settings), compact: { glyph: "car.fill", value: `${model.commute.minutes}m` } };
@@ -3710,6 +3737,10 @@ function accessoryLines(model, settings) {
         glyph: "gift.fill",
         title: model.contactBirthdays.length === 1 ? "Birthday Today" : `${model.contactBirthdays.length} Birthdays Today`,
         subtitle: model.contactBirthdays.join(", "),
+        // The name is the news; "Birthday Today" is just the category.
+        inline: model.contactBirthdays.length === 1
+          ? `${model.contactBirthdays[0]}'s birthday`
+          : `${model.contactBirthdays.length} birthdays today`,
         compact: { glyph: "gift.fill", value: String(model.contactBirthdays.length) },
       };
     case "reminders":
@@ -3717,6 +3748,7 @@ function accessoryLines(model, settings) {
         glyph: "checkmark.circle.fill",
         title: model.dueReminders.length === 1 ? "1 Reminder Due" : `${model.dueReminders.length} Reminders Due`,
         subtitle: model.dueReminders[0].title,
+        inline: model.dueReminders.length === 1 ? model.dueReminders[0].title : `${model.dueReminders.length} reminders due`,
         compact: { glyph: "checkmark.circle.fill", value: String(model.dueReminders.length) },
       };
     case "steps": {
@@ -3738,23 +3770,24 @@ function accessoryLines(model, settings) {
         : model.activity.activeCalories != null
         ? String(Math.round(model.activity.activeCalories))
         : `${Math.round(model.activity.standHours)}h`;
-      return { glyph: "figure.run.circle.fill", title: "Activity", subtitle: parts.join(" · "), compact: { glyph: "figure.run.circle.fill", value: compactValue } };
+      return { glyph: "figure.run.circle.fill", title: "Activity", subtitle: parts.join(" · "), inline: parts[0] ? `${parts[0]} today` : "Activity", compact: { glyph: "figure.run.circle.fill", value: compactValue } };
     }
     case "stocks": {
       const first = model.stockQuotes[0];
       const changePct = ((first.price - first.previousClose) / first.previousClose) * 100;
       const arrow = changePct > 0.005 ? "▲" : changePct < -0.005 ? "▼" : "–";
-      return { glyph: "chart.line.uptrend.xyaxis", title: "Markets Closed", subtitle: model.stockQuotes.map((quote) => formatStockQuote(quote)).join("  "), compact: { glyph: "chart.line.uptrend.xyaxis", value: `${arrow}${Math.abs(changePct).toFixed(1)}%` } };
+      return { glyph: "chart.line.uptrend.xyaxis", title: "Markets Closed", subtitle: model.stockQuotes.map((quote) => formatStockQuote(quote)).join("  "), inline: formatStockQuote(first), compact: { glyph: "chart.line.uptrend.xyaxis", value: `${arrow}${Math.abs(changePct).toFixed(1)}%` } };
     }
     case "temp-swing":
       return {
         glyph: model.tempSwing.delta < 0 ? "thermometer.snowflake" : "thermometer.sun.fill",
         title: model.tempSwing.delta < 0 ? "Colder Tomorrow" : "Warmer Tomorrow",
         subtitle: `High ${Math.round(model.tempSwing.tomorrowHigh)}° (today ${Math.round(model.tempSwing.todayHigh)}°)`,
+        inline: `${model.tempSwing.delta < 0 ? "Colder" : "Warmer"} tomorrow · ${Math.round(model.tempSwing.tomorrowHigh)}°`,
         compact: { glyph: model.tempSwing.delta < 0 ? "thermometer.snowflake" : "thermometer.sun.fill", value: `${Math.round(model.tempSwing.tomorrowHigh)}°` },
       };
     case "now-playing":
-      return { glyph: "music.note", title: model.nowPlaying.title, subtitle: model.nowPlaying.artist, compact: { glyph: "music.note", value: "♪" } };
+      return { glyph: "music.note", title: model.nowPlaying.title, subtitle: model.nowPlaying.artist, inline: model.nowPlaying.title, compact: { glyph: "music.note", value: "♪" } };
     default: {
       // The Lock Screen natively shows the time and date, so neither ever
       // appears here, and a greeting is decoration, not information — the
@@ -3794,9 +3827,7 @@ function renderAccessoryWidget(lines, family) {
   widget.setPadding(0, 0, 0, 0);
 
   if (family === "accessoryInline") {
-    // Inline is a single line of text next to the Lock Screen date — iOS
-    // ignores most styling here, so it's just the two parts joined.
-    widget.addText(lines.subtitle ? `${lines.title} · ${lines.subtitle}` : lines.title);
+    widget.addText(inlineText(lines));
     return widget;
   }
 
