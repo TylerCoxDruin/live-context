@@ -133,6 +133,9 @@ const DEFAULT_SETTINGS = {
     // The user telling us Apple's own weather complication is already on
     // their Lock Screen — undetectable from code.
     lockScreenShowsWeather: false,
+    // Hour of day after which birthdays/holidays stop claiming the widget
+    // so other information gets a turn. 24 = all day, 0 = never.
+    allDayCardEndHour: 12,
     // Opt-in routine learning — see MARK: - Smart Priorities. Off by
     // default: it collects (local-only) time-of-day usage patterns, and
     // that should be a deliberate choice, not a surprise.
@@ -328,6 +331,7 @@ function sanitizeSettings(s) {
   s.behavior.shortcutNowPlayingFreshMinutes = orNum(s.behavior.shortcutNowPlayingFreshMinutes, d.behavior.shortcutNowPlayingFreshMinutes);
   s.behavior.shortcutMessageFreshMinutes = orNum(s.behavior.shortcutMessageFreshMinutes, d.behavior.shortcutMessageFreshMinutes);
   s.behavior.shortcutFocusFreshMinutes = orNum(s.behavior.shortcutFocusFreshMinutes, d.behavior.shortcutFocusFreshMinutes);
+  s.behavior.allDayCardEndHour = clamp(orNum(s.behavior.allDayCardEndHour, d.behavior.allDayCardEndHour), 0, 24);
   return s;
 }
 
@@ -2334,8 +2338,12 @@ async function buildWidgetModel(settings, weather, collectSecondary = false, exc
     weather: () => (isPrecipitationImminent(weather) && settings.behavior.weatherAlertEnabled ? { priority: "weather", weather, events: standardEvents } : null),
     "air-quality": () => (badAir != null ? { priority: "air-quality", weather, aqi: badAir, events: standardEvents } : null),
     uv: () => (uvToday != null ? { priority: "uv", weather, uvIndex: uvToday, events: standardEvents } : null),
-    holiday: () => (holiday ? { priority: "holiday", weather, holiday, events: standardEvents } : null),
-    birthdays: () => (contactBirthdays.length > 0 ? { priority: "birthdays", weather, contactBirthdays, events: standardEvents } : null),
+    // Birthdays and holidays are true all day, which means without a
+    // window they'd hold the widget hostage from midnight to midnight and
+    // nothing else would ever get a turn. They lead in the morning (when
+    // the reminder is actually actionable) and then step aside.
+    holiday: () => (holiday && isAllDayCardWindow(settings) ? { priority: "holiday", weather, holiday, events: standardEvents } : null),
+    birthdays: () => (contactBirthdays.length > 0 && isAllDayCardWindow(settings) ? { priority: "birthdays", weather, contactBirthdays, events: standardEvents } : null),
     reminders: () => (dueReminders.length > 0 ? { priority: "reminders", weather, dueReminders, events: standardEvents } : null),
     steps: () => (shortcutSteps != null ? { priority: "steps", weather, steps: shortcutSteps, events: standardEvents } : null),
     sleep: () => (shortcutSleep != null ? { priority: "sleep", weather, hours: shortcutSleep, events: standardEvents } : null),
@@ -3234,6 +3242,15 @@ function addMixedRow(widget, segments, style, url) {
 // `weather` is optional — only needed when windDownUseSunset is on, so
 // nothing downstream breaks if it's unavailable (falls back to the fixed
 // start hour, same as if the toggle were off).
+// Whether all-day states (birthdays, holidays) may still claim the card.
+// 0 means no window at all, 24 keeps the old always-on behavior.
+function isAllDayCardWindow(settings) {
+  const endHour = settings.behavior.allDayCardEndHour;
+  if (endHour >= 24) return true;
+  if (endHour <= 0) return false;
+  return new Date().getHours() < endHour;
+}
+
 function isWindDownTime(settings, weather) {
   if (!settings.behavior.windDownEnabled) return false;
 
@@ -3515,16 +3532,16 @@ async function createWidget(settings, family = "small") {
     // pill/color/background system below applies. Same model, same
     // priority order; only the presentation differs.
     if (String(family).startsWith("accessory")) {
-      const excluded = accessoryExcludedPriorities(settings, family);
+      const excluded = accessoryExcludedPriorities(settings);
+      const rank = accessoryRank(settings, family);
       if (isWindDownTime(settings, weather)) {
-        const lines = await windDownAccessoryLines(settings, weather, excluded);
-        recordAccessoryClaim(family, lines.claim);
+        const lines = await windDownAccessoryLines(settings, weather, rank);
         const widget = renderAccessoryWidget(lines, family);
         widget.refreshAfterDate = computeWindDownRefreshDate();
         return widget;
       }
-      const model = await buildWidgetModel(settings, weather, false, excluded);
-      recordAccessoryClaim(family, model.priority);
+      const fullModel = await buildWidgetModel(settings, weather, rank > 0, excluded);
+      const model = accessoryModelForRank(fullModel, rank);
       const widget = renderAccessoryWidget(accessoryLines(model, settings), family);
       widget.refreshAfterDate = computeRefreshDate(model, settings);
       return widget;
@@ -3559,26 +3576,35 @@ async function createWidget(settings, family = "small") {
 // widget removed from the Lock Screen stops influencing anyone within a
 // few hours. Same-family duplicates can't be told apart — pin those
 // ({"pin": ...}) instead.
-const ACCESSORY_FAMILIES = ["accessoryInline", "accessoryCircular", "accessoryRectangular"];
-const ACCESSORY_CLAIM_FRESH_MINUTES = 360;
+// Which slice of the ranked cascade each Lock Screen shape shows, so two
+// widgets on the same screen don't say the same thing. Rank is fixed per
+// shape rather than negotiated between widgets: iOS refreshes them in
+// separate processes at the same moment, so anything cache-based (widget
+// A writes what it picked, widget B reads it) loses the race and they all
+// land on the same state anyway. Rectangular has the richest layout, so
+// it gets the top story; inline the runner-up; circular the third.
+const ACCESSORY_RANK = { accessoryRectangular: 0, accessoryInline: 1, accessoryCircular: 2 };
 
-function accessoryExcludedPriorities(settings, family) {
+function accessoryRank(settings, family) {
+  if (!settings.behavior.lockTeamworkEnabled) return 0;
+  return ACCESSORY_RANK[family] ?? 0;
+}
+
+function accessoryExcludedPriorities(settings) {
   const excluded = new Set();
   // Apple's own weather complication can't be detected from code — the
   // Lock Screen Shows Weather setting is the user telling us it's there.
   if (settings.behavior.lockScreenShowsWeather) excluded.add("weather");
-  if (settings.behavior.lockTeamworkEnabled) {
-    for (const other of ACCESSORY_FAMILIES) {
-      if (other === family) continue;
-      const claim = getCacheEntry(`accessoryClaim-${other}`, ACCESSORY_CLAIM_FRESH_MINUTES);
-      if (claim && !claim.stale && claim.data.priority) excluded.add(claim.data.priority);
-    }
-  }
   return excluded;
 }
 
-function recordAccessoryClaim(family, priority) {
-  setCacheEntry(`accessoryClaim-${family}`, { priority });
+// The cascade ranked best-first, as far down as it was collected. Falls
+// back toward the top when this shape's rank is deeper than the number of
+// states that currently apply, so a quiet day shows the same (real) card
+// on two widgets rather than one of them showing nothing.
+function accessoryModelForRank(model, rank) {
+  const ranked = [model, ...(model.secondaryCards ?? [])];
+  return ranked[Math.min(rank, ranked.length - 1)] ?? model;
 }
 
 // The Lock Screen during wind-down: iOS's own Sleep Focus screen already
@@ -3589,7 +3615,7 @@ function recordAccessoryClaim(family, priority) {
 // first event, the fed-in alarm — coordinating through the same claims
 // as the daytime states so multiple widgets pick different ones. The
 // bare "Wind Down" card is the last resort, not the headline.
-async function windDownAccessoryLines(settings, weather, excluded) {
+async function windDownAccessoryLines(settings, weather, rank) {
   const candidates = [];
 
   const batteryPercent = Math.round(Device.batteryLevel() * 100);
@@ -3643,9 +3669,7 @@ async function windDownAccessoryLines(settings, weather, excluded) {
     });
   }
 
-  for (const candidate of candidates) {
-    if (!excluded?.has(candidate.claim)) return candidate;
-  }
+  if (candidates.length > 0) return candidates[Math.min(rank ?? 0, candidates.length - 1)];
   return {
     claim: "wind-down",
     glyph: "moon.zzz.fill",
@@ -4698,17 +4722,15 @@ async function runDiagnostics() {
   }
 
   if (settings.behavior.lockTeamworkEnabled) {
-    const claims = [];
-    for (const accessoryFamily of ACCESSORY_FAMILIES) {
-      const claim = getCacheEntry(`accessoryClaim-${accessoryFamily}`, ACCESSORY_CLAIM_FRESH_MINUTES);
-      if (claim && !claim.stale && claim.data.priority) {
-        claims.push(`${accessoryFamily.replace("accessory", "").toLowerCase()}: ${PRIORITY_LABELS[claim.data.priority] ?? claim.data.priority}`);
-      }
-    }
-    if (claims.length > 0) {
-      lines.push(`🤝 Lock Screen teamwork — currently claimed: ${claims.join(", ")}. Each widget avoids repeating what the others show.`);
-    }
+    lines.push("🤝 Lock Screen teamwork: rectangular shows the top state, inline the runner-up, circular the third. With fewer states than that in play they repeat, which is intended.");
   }
+  lines.push(
+    settings.behavior.allDayCardEndHour >= 24
+      ? "🎂 All-day cards (birthdays, holidays): shown all day."
+      : settings.behavior.allDayCardEndHour <= 0
+      ? "🎂 All-day cards (birthdays, holidays): off."
+      : `🎂 All-day cards (birthdays, holidays): lead until ${settings.behavior.allDayCardEndHour}:00, then step aside${isAllDayCardWindow(settings) ? " (inside the window now)" : " (past the window now)"}.`
+  );
 
   const weather = await fetchWeather(settings);
   if (weather) {
@@ -5018,8 +5040,18 @@ const SETTINGS_SECTIONS = [
         choices: ["On", "Off"],
       },
       {
+        label: "🎂 All-Day Card Cutoff",
+        description: "Birthdays and holidays are true all day, so without a cutoff they'd hold the widget from midnight to midnight and nothing else would get a turn. They lead until this hour, then step aside for whatever else applies. 24 keeps them up all day, 0 turns those cards off entirely.",
+        get: (s) => String(s.behavior.allDayCardEndHour),
+        apply: (s, value) => {
+          const hour = Number(value);
+          if (Number.isFinite(hour)) s.behavior.allDayCardEndHour = clamp(Math.round(hour), 0, 24);
+        },
+        suffix: ":00",
+      },
+      {
         label: "🤝 Lock Screen Teamwork",
-        description: "When on, your Lock Screen widgets check what the other Lock Screen widgets are showing and pick something different when they can — one shows the event, another your steps, instead of three copies of the same weather. Widgets pinned via their parameter always show their pin regardless. Only affects Lock Screen widgets.",
+        description: "When on, each Lock Screen shape shows a different rung of the priority list instead of all of them repeating the top one: rectangular takes the most important thing, inline the runner-up, circular the third. On a quiet day with only one thing going on they'll agree, since showing a real card beats showing nothing. Widgets pinned via their parameter always show their pin regardless.",
         get: (s) => (s.behavior.lockTeamworkEnabled ? "On" : "Off"),
         apply: (s, value) => { s.behavior.lockTeamworkEnabled = value === "On"; },
         choices: ["On", "Off"],

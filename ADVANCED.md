@@ -45,7 +45,11 @@ reading those.
   your places), and sorts just those five among themselves to match your
   routine. Nothing else ever moves, everything learned stays in the
   widget's own local cache, Diagnostics shows exactly what it has
-  learned, and switching it off deletes the data.
+  learned, and switching it off deletes the data. There's also an
+  **All-Day Card Cutoff** here: birthdays and holidays are true all day,
+  so without a cutoff they'd sit on the widget from midnight to midnight
+  and nothing else would get a turn. By default they lead until noon and
+  then step aside.
 - **Weather**: API key, city ID, temperature units, cache limit, forecast
   data toggle, feels-like temps, morning high briefing.
 - **Weather Alerts**: active precipitation, rain nowcast, severe weather
@@ -305,16 +309,20 @@ are no pills or colors there by design. Preview from the main menu under
 
 ### Widgets that don't repeat each other
 
-Multiple Lock Screen widgets coordinate automatically: each one records
-what it's showing, and the others check that and pick something
-different when they can, so you get the event on one, steps on another,
-instead of three copies of the weather. This is on by default
-(Settings > Priorities > Lock Screen Teamwork). Two notes: widgets of
-the same shape can't be told apart, so pin those (below) if you run two
-circulars; and if your Lock Screen already has Apple's own weather
-complication, flip on **Lock Screen Shows Weather** so Live Context
-skips plain weather there too. The script can't see your Lock Screen,
-so that one's a toggle rather than automatic.
+Multiple Lock Screen widgets show different things automatically: each
+shape takes a different rung of the priority list, so the rectangular
+one gets the most important thing, inline gets the runner-up, and
+circular gets the third. On a quiet day when only one thing is going on
+they'll agree, which is deliberate, since showing a real card beats
+showing nothing. This is on by default (Settings > Priorities > Lock
+Screen Teamwork).
+
+Two notes: two widgets of the same shape will always match each other,
+so pin those (below) if you run two circulars; and if your Lock Screen
+already has Apple's own weather complication, flip on **Lock Screen
+Shows Weather** so Live Context skips plain weather there too. The
+script can't see your Lock Screen, so that one's a toggle rather than
+automatic.
 
 At night the Lock Screen widgets don't announce Wind Down either. iOS's
 Sleep Focus screen already dims itself, says "Sleep", and shows your
