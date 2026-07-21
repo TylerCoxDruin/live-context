@@ -3669,6 +3669,60 @@ async function windDownAccessoryLines(settings, weather, rank) {
     });
   }
 
+  const forecast = await fetchForecast(settings, weather);
+  if (forecast?.tomorrowHigh != null) {
+    const high = Math.round(forecast.tomorrowHigh);
+    candidates.push({
+      claim: "wind-down-forecast",
+      glyph: "thermometer.sun.fill",
+      title: `Tomorrow · ${high}°`,
+      subtitle: "Forecast high",
+      inline: `Tomorrow ${high}°`,
+      compact: { glyph: "thermometer.sun.fill", value: `${high}°` },
+    });
+  }
+
+  const stepsToday = readShortcutSteps(settings);
+  if (stepsToday != null) {
+    candidates.push({
+      claim: "wind-down-steps",
+      glyph: "figure.walk.circle.fill",
+      title: `${stepsToday.toLocaleString()} steps`,
+      subtitle: "Today",
+      inline: `${stepsToday.toLocaleString()} steps today`,
+      compact: { glyph: "figure.walk.circle.fill", value: compactNumber(stepsToday) },
+    });
+  }
+
+  const sleepHours = readShortcutSleep(settings);
+  if (sleepHours != null) {
+    const hours = Math.floor(sleepHours);
+    const minutes = Math.round((sleepHours - hours) * 60);
+    const duration = minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+    candidates.push({
+      claim: "wind-down-sleep",
+      glyph: "bed.double.fill",
+      title: `${duration} sleep`,
+      subtitle: "Last night",
+      compact: { glyph: "bed.double.fill", value: minutes > 0 ? `${hours}h${minutes}` : `${hours}h` },
+    });
+  }
+
+  // Always applies, so the pool can never run dry and leave two widgets
+  // repeating each other. Ambient rather than informative, which is why
+  // it sits last.
+  // Lock Screen widgets render SF Symbols only, so the emoji icon style's
+  // moon has to fall back to a glyph here rather than being skipped.
+  const moonGlyph = moonPhaseIcon(settings).glyph ?? "moon.stars.fill";
+  candidates.push({
+    claim: "wind-down-moon",
+    glyph: moonGlyph,
+    title: "Wind Down",
+    subtitle: settings.behavior.windDownMessage,
+    inline: "Wind Down",
+    compact: { glyph: moonGlyph, value: "Zzz" },
+  });
+
   if (candidates.length > 0) return candidates[Math.min(rank ?? 0, candidates.length - 1)];
   return {
     claim: "wind-down",
